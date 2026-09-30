@@ -1,0 +1,6 @@
+{
+  "name": "Faiiya Pay - WordPress Closed-Loop Wallet & Monnify Gateway",
+  "description": "Enterprise-grade WordPress & WooCommerce digital wallet plugin with Monnify Reserved Accounts, referral engine, and headless REST API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
