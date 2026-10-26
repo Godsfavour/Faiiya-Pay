@@ -6,7 +6,9 @@ export type TransactionType =
   | 'debit_order'
   | 'referral_bonus'
   | 'refund'
-  | 'admin_adjustment';
+  | 'admin_adjustment'
+  | 'withdrawal'
+  | 'withdrawal_refund';
 
 export type TransactionStatus = 'pending' | 'completed' | 'failed' | 'reversed';
 
@@ -29,6 +31,8 @@ export interface Wallet {
   currency: string;
   status: WalletStatus;
   kycStatus: KycStatus;
+  freezeReason?: string;
+  frozenAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -46,6 +50,55 @@ export interface Transaction {
   metadata: Record<string, any>;
   status: TransactionStatus;
   createdAt: string;
+}
+
+export interface WithdrawalRequest {
+  id: number;
+  requestUuid: string;
+  userId: number;
+  accountNumber: string;
+  bankCode: string;
+  bankName: string;
+  accountName: string;
+  amount: number;
+  fee: number;
+  netPayout: number;
+  status: 'pending' | 'approved' | 'rejected';
+  adminReason?: string;
+  transactionReference?: string;
+  createdAt: string;
+  processedAt?: string;
+}
+
+export interface NotificationLog {
+  id: number;
+  userId: number;
+  channel: 'sms' | 'email';
+  recipient: string;
+  eventType:
+    | 'deposit_success'
+    | 'withdrawal_request'
+    | 'withdrawal_approved'
+    | 'withdrawal_rejected'
+    | 'order_debited'
+    | 'referral_bonus'
+    | 'account_frozen'
+    | 'account_unfrozen'
+    | 'admin_adjustment';
+  subject: string;
+  body: string;
+  deliveryStatus: 'delivered' | 'sent';
+  timestamp: string;
+}
+
+export interface MerchantFloatStats {
+  settledMerchantBalance: number;
+  customerLiabilities: number;
+  netLiquidFloat: number;
+  unallocatedFloat: number;
+  monnifySettlementAccount: string;
+  gatewayStatus: 'healthy' | 'operational';
+  lastSyncedAt: string;
 }
 
 export interface Referral {
@@ -86,13 +139,26 @@ export interface User {
 }
 
 export interface PluginSettings {
-  monnifyMode: 'sandbox' | 'live';
+  monnifyMode: 'live';
   monnifyApiKey: string;
   monnifySecretKey: string;
   monnifyContractCode: string;
+  adminSecurityPin: string;
+  feeBearer: 'merchant' | 'customer';
+  depositFeeType: 'flat' | 'percentage';
+  depositFeeValue: number;
+  depositFeeCap: number;
+  withdrawalFeeType: 'flat' | 'percentage';
+  withdrawalFeeValue: number;
+  minDeposit: number;
+  maxDepositTier1: number;
+  minWithdrawal: number;
+  maxWithdrawalTier1: number;
   referralEnabled: boolean;
   referralRewardAmount: number;
   referralTrigger: 'on_first_wallet_deposit' | 'on_registration';
+  notificationsSmsEnabled: boolean;
+  notificationsEmailEnabled: boolean;
 }
 
 export interface StoreProduct {

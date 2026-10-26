@@ -103,6 +103,55 @@ const ENDPOINTS: ApiEndpoint[] = [
     },
   },
   {
+    id: 'withdraw',
+    method: 'POST',
+    path: '/wp-json/faiiya/v1/wallet/withdraw',
+    title: 'Customer Bank Outflow Withdrawal Request',
+    description:
+      'Initiates an outbound bank transfer, debits the wallet atomically, applies withdrawal fee configuration, and schedules disbursement via Monnify.',
+    authRequired: true,
+    sampleBody: {
+      account_number: '0123456789',
+      bank_code: '058',
+      bank_name: 'Guaranty Trust Bank (GTBank)',
+      account_name: 'Babatunde Adeleke',
+      amount: 15000.0,
+    },
+  },
+  {
+    id: 'withdrawals_list',
+    method: 'GET',
+    path: '/wp-json/faiiya/v1/wallet/withdrawals',
+    title: 'Get User Withdrawal Pipeline History',
+    description:
+      'Fetches history of customer withdrawal requests with real-time status (pending, approved, rejected) and fee deductions.',
+    authRequired: true,
+  },
+  {
+    id: 'merchant_float',
+    method: 'GET',
+    path: '/wp-json/faiiya/v1/admin/float-monitor',
+    title: 'Monnify Merchant Float Monitor & Solvency Ratio',
+    description:
+      'Inspects live settled merchant balance, liquid float buffer, and active customer ledger liabilities.',
+    authRequired: true,
+  },
+  {
+    id: 'freeze_wallet',
+    method: 'POST',
+    path: '/wp-json/faiiya/v1/admin/freeze-wallet',
+    title: 'Freeze / Suspend Customer Wallet (2FA PIN)',
+    description:
+      'Administratively freeze or unfreeze a customer account with mandatory audit reason and 6-digit security PIN verification.',
+    authRequired: true,
+    sampleBody: {
+      user_id: 2,
+      action: 'freeze',
+      reason: 'Compliance audit pending',
+      admin_pin: '889922',
+    },
+  },
+  {
     id: 'webhook',
     method: 'POST',
     path: '/wp-json/faiiya/v1/webhook/monnify',
@@ -117,7 +166,7 @@ const ENDPOINTS: ApiEndpoint[] = [
         paymentReference: 'PAY_MNFY_' + Date.now(),
         amountPaid: 75000.0,
         paymentStatus: 'PAID',
-        customer: { email: 'chinedu.okafor@example.ng' },
+        customer: { email: 'customer@example.ng' },
         destinationAccountInformation: {
           accountNumber: '9928374182',
           bankCode: '035',
@@ -289,6 +338,43 @@ export const ApiExplorer: React.FC<ApiExplorerProps> = ({ currentUser }) => {
               remaining_balance: wallet.balance - parsed.amount,
             };
           }
+        } else if (selectedEndpoint.id === 'withdraw') {
+          const parsed = JSON.parse(requestBodyText);
+          const w = faiiyaEngine.requestWithdrawal({
+            userId: currentUser.id,
+            accountNumber: parsed.account_number,
+            bankCode: parsed.bank_code,
+            bankName: parsed.bank_name,
+            accountName: parsed.account_name,
+            amount: Number(parsed.amount),
+          });
+          status = 201;
+          result = {
+            status: 'success',
+            message: 'Withdrawal request initiated successfully. Held in pending queue for Monnify outbound transfer.',
+            withdrawal_request: w,
+          };
+        } else if (selectedEndpoint.id === 'withdrawals_list') {
+          result = {
+            status: 'success',
+            withdrawals: faiiyaEngine.getWithdrawals(currentUser.id),
+          };
+        } else if (selectedEndpoint.id === 'merchant_float') {
+          result = {
+            status: 'success',
+            float_stats: faiiyaEngine.getMerchantFloat(),
+          };
+        } else if (selectedEndpoint.id === 'freeze_wallet') {
+          const parsed = JSON.parse(requestBodyText);
+          if (parsed.action === 'freeze') {
+            faiiyaEngine.freezeWallet(parsed.user_id, parsed.reason, parsed.admin_pin);
+          } else {
+            faiiyaEngine.unfreezeWallet(parsed.user_id, parsed.admin_pin);
+          }
+          result = {
+            status: 'success',
+            message: `Wallet for user #${parsed.user_id} is now ${parsed.action === 'freeze' ? 'frozen' : 'active'}.`,
+          };
         } else if (selectedEndpoint.id === 'webhook') {
           const parsed = JSON.parse(requestBodyText);
           const hookRes = faiiyaEngine.processMonnifyWebhook(parsed);

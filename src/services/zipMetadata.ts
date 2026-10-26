@@ -16,7 +16,7 @@ export const COMPILED_ZIP_METADATA: ZipPackageMetadata = {
   "fileSizeBytes": 44112,
   "fileSizeFormatted": "43.1 KB",
   "totalFiles": 22,
-  "sha256": "f7d1673108cb88cfab92a128d605641bb512416ebefcb7e301322941de10f9b6",
-  "md5": "3390c6f032ba049eae86e43c7db973ab",
-  "compiledAt": "2026-09-30T14:43:51.394Z"
+  "sha256": "b5f7253e365709e8c230f942986274a8a6f5e3816b78462d5366e6de72192429",
+  "md5": "5d417c0ee8ea0a67d1dc09957de78f81",
+  "compiledAt": "2026-10-26T15:44:41.866Z"
 };
