@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import {
-  ShieldCheck,
-  UserPlus,
   Lock,
   Building2,
-  Sparkles,
   AlertCircle,
   CheckCircle2,
-  RefreshCw,
-  Fingerprint,
+  Phone,
+  Mail,
+  User as UserIcon,
+  Ticket,
+  ArrowRight,
+  LogIn,
 } from 'lucide-react';
 import { faiiyaEngine } from '../services/faiiyaEngine';
 
@@ -23,191 +24,165 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const [mode, setMode] = useState<'signup' | 'login'>('signup');
   const [firstName, setFirstName] = useState('');
   const [otherNames, setOtherNames] = useState('');
   const [lastName, setLastName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [bvn, setBvn] = useState('');
-  const [nin, setNin] = useState('');
   const [referralCode, setReferralCode] = useState('');
+  const [loginEmailOrPhone, setLoginEmailOrPhone] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [isVerifyingKyc, setIsVerifyingKyc] = useState(false);
-  const [kycSynced, setKycSynced] = useState<boolean>(false);
-  const [kycProvider, setKycProvider] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const isNinValid = /^\d{11}$/.test(nin);
-  const isBvnValid = /^\d{11}$/.test(bvn);
-  const hasKyc = isNinValid || isBvnValid;
-
-  // Live Monnify API Verification & Name Replacement
-  const handleVerifyAndSyncNames = async () => {
-    const targetId = nin || bvn;
-    const targetType: 'nin' | 'bvn' = nin ? 'nin' : 'bvn';
-
-    if (!targetId || targetId.length !== 11) {
-      setError(`Please enter a valid 11-digit ${targetType.toUpperCase()} to query Monnify API.`);
-      return;
-    }
-
-    setError(null);
-    setIsVerifyingKyc(true);
-
-    try {
-      const res = await faiiyaEngine.verifyKycWithMonnify({
-        bvnOrNin: targetId,
-        type: targetType,
-        nameHint: {
-          firstName: firstName.trim(),
-          otherNames: otherNames.trim(),
-          lastName: lastName.trim(),
-        },
-      });
-
-      // Strict Compliance: Replace the names on the form with the official names from the BVN/NIN!
-      setFirstName(res.firstName);
-      setOtherNames(res.otherNames || '');
-      setLastName(res.lastName);
-      setKycSynced(true);
-      setKycProvider(res.provider);
-      setError(null);
-    } catch (err: any) {
-      setKycSynced(false);
-      setError(err.message || 'Monnify KYC Verification failed.');
-    } finally {
-      setIsVerifyingKyc(false);
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    const kycTarget = nin || bvn;
-    const kycType = nin ? 'nin' : 'bvn';
-
-    if (nin && !isNinValid) {
-      setError('National Identity Number (NIN) must be exactly 11 numeric digits.');
+    if (!firstName.trim() || !lastName.trim()) {
+      setError('Please provide your First Name and Last Name.');
       return;
     }
 
-    if (bvn && !isBvnValid) {
-      setError('Bank Verification Number (BVN) must be exactly 11 numeric digits.');
+    if (!email.trim() || !email.includes('@')) {
+      setError('Please provide a valid email address.');
+      return;
+    }
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters long.');
       return;
     }
 
     setLoading(true);
 
     try {
-      let verifiedFirst = firstName.trim();
-      let verifiedOther = otherNames.trim();
-      let verifiedLast = lastName.trim();
-
-      // If NIN or BVN is provided, query Monnify API strictly with no fake fallbacks
-      if (kycTarget) {
-        const monnifyResult = await faiiyaEngine.verifyKycWithMonnify({
-          bvnOrNin: kycTarget,
-          type: kycType,
-          nameHint: {
-            firstName: verifiedFirst,
-            otherNames: verifiedOther,
-            lastName: verifiedLast,
-          },
-        });
-
-        // Replace names with verified legal identity for full Monnify/NIBSS compliance
-        verifiedFirst = monnifyResult.firstName;
-        verifiedOther = monnifyResult.otherNames;
-        verifiedLast = monnifyResult.lastName;
-        setFirstName(verifiedFirst);
-        setOtherNames(verifiedOther);
-        setLastName(verifiedLast);
-      }
-
-      // Register the user with compliant names
+      // Standard Tier 0 Registration (no NIN/BVN on registration)
       const res = faiiyaEngine.registerUser({
-        firstName: verifiedFirst,
-        otherNames: verifiedOther || undefined,
-        lastName: verifiedLast,
-        email,
-        referredBy: referralCode || undefined,
+        firstName: firstName.trim(),
+        otherNames: otherNames.trim() || undefined,
+        lastName: lastName.trim(),
+        phoneNumber: phoneNumber.trim() || undefined,
+        email: email.trim(),
+        referredBy: referralCode.trim() || undefined,
       });
-
-      // Verify KYC and provision virtual accounts (Account Name = User First Name)
-      if (kycTarget) {
-        faiiyaEngine.verifyKyc({
-          userId: res.user.id,
-          bvnOrNin: kycTarget,
-          verifiedNames: {
-            firstName: verifiedFirst,
-            otherNames: verifiedOther,
-            lastName: verifiedLast,
-          },
-        });
-      }
 
       setLoading(false);
       onSuccess(res.user.id);
       onClose();
     } catch (err: any) {
       setLoading(false);
-      setError(err.message || 'Registration and verification failed.');
+      setError(err.message || 'Registration failed.');
+    }
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    const query = loginEmailOrPhone.trim().toLowerCase();
+    if (!query) {
+      setError('Please enter your email or username to log in.');
+      return;
+    }
+
+    const allUsers = faiiyaEngine.getUsers();
+    const found = allUsers.find(
+      (u) =>
+        u.email.toLowerCase() === query ||
+        u.username.toLowerCase() === query ||
+        (u.phoneNumber && u.phoneNumber.replace(/\D/g, '') === query.replace(/\D/g, ''))
+    );
+
+    if (found) {
+      faiiyaEngine.setCurrentUserId(found.id);
+      onSuccess(found.id);
+      onClose();
+    } else {
+      setError(`No account found matching "${loginEmailOrPhone}". Please check your details or sign up.`);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-800 w-full max-w-lg rounded-2xl p-4 sm:p-6 shadow-2xl relative my-auto max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
-              <UserPlus className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm sm:text-base font-bold text-white">
-                Customer Onboarding & Monnify KYC
-              </h3>
-              <p className="text-[11px] sm:text-xs text-slate-400">
-                Module A & B: Virtual bank account reservation with NIN or BVN.
-              </p>
-            </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 overflow-y-auto animate-in fade-in duration-200">
+      <div className="bg-slate-900 border border-slate-800 w-full max-w-md rounded-3xl p-6 sm:p-8 shadow-2xl relative my-auto max-h-[92vh] overflow-y-auto">
+        {/* Close Button */}
+        <button
+          onClick={onClose}
+          className="absolute top-5 right-5 text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors"
+          aria-label="Close"
+        >
+          <span className="text-xl font-bold leading-none">&times;</span>
+        </button>
+
+        {/* Dynamic WordPress Site Logo Header - Twice the size (w-24 h-24), consistent styling */}
+        <div className="flex flex-col items-center text-center mb-6">
+          <div className="w-24 h-24 rounded-2xl bg-white border border-slate-700/60 shadow-xl flex items-center justify-center p-3 mb-4 transition-transform hover:scale-105">
+            <svg
+              className="w-full h-full text-slate-900"
+              viewBox="0 0 100 100"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              {/* WordPress Official Brand Mark */}
+              <circle cx="50" cy="50" r="48" fill="#0073AA" />
+              <path
+                d="M50 8C26.8 8 8 26.8 8 50c0 10.3 3.7 19.7 9.9 27L36.3 27.2c.4-1.1.8-2.2.8-3.1 0-1.4-1-2.4-2.8-2.6-.4 0-.7-.1-1.1-.1h-1.5V19h15.4v2.4h-1.5c-2.4.2-3.1 2-3.1 3.5 0 .9.3 2 .8 3.1l11.4 33.2 6.5-19.4c.4-1.2.6-2.3.6-3.1 0-1.4-.9-2.3-2.6-2.5-.4 0-.8-.1-1.1-.1h-1.5V19h14.7v2.4h-1.5c-2.3.2-3.2 2-3.2 3.5 0 .9.3 2 .8 3.1l11.3 32.8L82 77.2C88.2 69.8 92 60.3 92 50c0-23.2-18.8-42-42-42zm-2.8 77.8L31.8 40.4 17.5 79.5c8.6 6.1 19 9.7 30.2 9.7 1.5 0 3-.1 4.5-.3-1.6-.9-3.7-2-5-3.1zm22.4-44.5L59 69.2l13.7 11.5c5.3-7.2 8.5-16 8.5-25.7 0-4.5-.7-8.8-2-12.8L69.6 41.3z"
+                fill="#ffffff"
+              />
+            </svg>
           </div>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-white text-xl font-bold p-1 rounded-lg"
-          >
-            &times;
-          </button>
+
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+            Signup / login
+          </h2>
+
+          {/* Mode Switcher Tabs */}
+          <div className="flex bg-slate-950 p-1 rounded-2xl border border-slate-800 mt-4 w-full">
+            <button
+              type="button"
+              onClick={() => {
+                setMode('signup');
+                setError(null);
+              }}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all ${
+                mode === 'signup'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Sign Up
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMode('login');
+                setError(null);
+              }}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all ${
+                mode === 'login'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Log In
+            </button>
+          </div>
         </div>
 
         {error && (
-          <div className="mb-4 bg-rose-950/60 border border-rose-800/80 p-3 rounded-xl text-xs text-rose-200 flex items-start gap-2 shadow-sm animate-in fade-in">
+          <div className="mb-4 bg-rose-950/60 border border-rose-800/80 p-3.5 rounded-2xl text-xs text-rose-200 flex items-start gap-2.5 shadow-sm animate-in fade-in">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
             <div className="flex-1 font-medium leading-relaxed">{error}</div>
           </div>
         )}
 
-        {kycSynced && (
-          <div className="mb-4 bg-emerald-950/60 border border-emerald-800/80 p-3 rounded-xl text-xs text-emerald-200 flex items-start gap-2 shadow-sm animate-in fade-in">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <strong className="block text-emerald-300 font-bold mb-0.5">
-                ✓ Identity Verified & Compliant Names Synchronized
-              </strong>
-              Form names replaced with official {kycProvider || 'Monnify/NIBSS'} verified record:{' '}
-              <span className="font-semibold text-white">
-                {firstName} {otherNames ? otherNames + ' ' : ''}{lastName}
-              </span>
-            </div>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-3.5 sm:space-y-4">
-          {/* Name Fields: First Name, Other Names (optional), Last Name */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {mode === 'signup' ? (
+          <form onSubmit={handleSignupSubmit} className="space-y-3.5">
+            {/* First Name on its own separate line */}
             <div>
               <label className="text-xs font-semibold text-slate-300 block mb-1">
                 First Name <span className="text-rose-400">*</span>
@@ -216,18 +191,13 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
                 type="text"
                 required
                 value={firstName}
-                onChange={(e) => {
-                  setFirstName(e.target.value);
-                  setKycSynced(false);
-                }}
+                onChange={(e) => setFirstName(e.target.value)}
                 placeholder="e.g. Babatunde"
-                className={`w-full bg-slate-950 border rounded-lg px-3 py-2 text-xs sm:text-sm text-slate-200 focus:outline-none ${
-                  kycSynced
-                    ? 'border-emerald-500/80 bg-emerald-950/20 text-emerald-200 font-semibold'
-                    : 'border-slate-800 focus:border-emerald-500'
-                }`}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
+
+            {/* Other Names (optional) on its own separate line */}
             <div>
               <label className="text-xs font-semibold text-slate-300 block mb-1">
                 Other Names <span className="text-slate-500 font-normal">(optional)</span>
@@ -235,18 +205,13 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
               <input
                 type="text"
                 value={otherNames}
-                onChange={(e) => {
-                  setOtherNames(e.target.value);
-                  setKycSynced(false);
-                }}
+                onChange={(e) => setOtherNames(e.target.value)}
                 placeholder="e.g. Oluwaseun"
-                className={`w-full bg-slate-950 border rounded-lg px-3 py-2 text-xs sm:text-sm text-slate-200 focus:outline-none ${
-                  kycSynced
-                    ? 'border-emerald-500/80 bg-emerald-950/20 text-emerald-200 font-semibold'
-                    : 'border-slate-800 focus:border-emerald-500'
-                }`}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
+
+            {/* Last Name on its own separate line */}
             <div>
               <label className="text-xs font-semibold text-slate-300 block mb-1">
                 Last Name <span className="text-rose-400">*</span>
@@ -255,198 +220,165 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
                 type="text"
                 required
                 value={lastName}
-                onChange={(e) => {
-                  setLastName(e.target.value);
-                  setKycSynced(false);
-                }}
+                onChange={(e) => setLastName(e.target.value)}
                 placeholder="e.g. Adeyemi"
-                className={`w-full bg-slate-950 border rounded-lg px-3 py-2 text-xs sm:text-sm text-slate-200 focus:outline-none ${
-                  kycSynced
-                    ? 'border-emerald-500/80 bg-emerald-950/20 text-emerald-200 font-semibold'
-                    : 'border-slate-800 focus:border-emerald-500'
-                }`}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
-          </div>
 
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1">
-              Email Address <span className="text-rose-400">*</span>
-            </label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="babatunde@example.ng"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs sm:text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1">
-              Password <span className="text-rose-400">*</span>
-            </label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••••••"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs sm:text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          {/* Identification Section: Shows NIN First then "or BVN" */}
-          <div className="bg-slate-950/80 p-3 sm:p-4 rounded-xl border border-slate-800 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-              <span className="text-xs font-bold text-slate-200">
-                Government KYC Verification (NIN First, or BVN)
-              </span>
-              <span className="text-[11px] text-slate-400">
-                Direct Monnify API query with live Name Compliance
-              </span>
+            {/* Phone Number on its own separate line */}
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1">
+                Phone Number <span className="text-rose-400">*</span>
+              </label>
+              <input
+                type="tel"
+                required
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                placeholder="e.g. 08031234567"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                    <Fingerprint className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>National ID (NIN)</span>
-                    <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/20 px-1 py-0.2 rounded uppercase">Primary</span>
-                  </label>
-                  {nin && (
-                    <span
-                      className={`text-[10px] font-mono ${
-                        isNinValid ? 'text-emerald-400' : 'text-rose-400'
-                      }`}
-                    >
-                      {nin.length}/11
-                    </span>
-                  )}
-                </div>
-                <input
-                  type="text"
-                  maxLength={11}
-                  inputMode="numeric"
-                  value={nin}
-                  onChange={(e) => {
-                    setNin(e.target.value.replace(/\D/g, ''));
-                    setKycSynced(false);
-                    setError(null);
-                  }}
-                  placeholder="11223344556"
-                  className="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-3 py-2 text-xs sm:text-sm text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
-                    <span>or BVN (11 Digits)</span>
-                  </label>
-                  {bvn && (
-                    <span
-                      className={`text-[10px] font-mono ${
-                        isBvnValid ? 'text-emerald-400' : 'text-rose-400'
-                      }`}
-                    >
-                      {bvn.length}/11
-                    </span>
-                  )}
-                </div>
-                <input
-                  type="text"
-                  maxLength={11}
-                  inputMode="numeric"
-                  value={bvn}
-                  onChange={(e) => {
-                    setBvn(e.target.value.replace(/\D/g, ''));
-                    setKycSynced(false);
-                    setError(null);
-                  }}
-                  placeholder="22345678901"
-                  className="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-3 py-2 text-xs sm:text-sm text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
-                />
-              </div>
+            {/* Email Address on its own separate line */}
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1">
+                Email Address <span className="text-rose-400">*</span>
+              </label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="chinedu@example.ng"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
             </div>
 
-            {/* Verify & Replace Names Action Button */}
-            {(nin || bvn) && (
-              <div className="flex items-center justify-between pt-1">
-                <button
-                  type="button"
-                  onClick={handleVerifyAndSyncNames}
-                  disabled={isVerifyingKyc || (!isNinValid && !isBvnValid)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 transition-all disabled:opacity-50"
-                >
-                  {isVerifyingKyc ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Querying Monnify API...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Verify & Replace Names for Compliance</span>
-                    </>
-                  )}
-                </button>
-                <span className="text-[10px] text-slate-500 italic">
-                  Live verification replaces First, Other, Last names
-                </span>
-              </div>
-            )}
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1">
-              Referral Code (Optional)
-            </label>
-            <input
-              type="text"
-              value={referralCode}
-              onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
-              placeholder="e.g. CHIN8921"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs sm:text-sm text-slate-200 font-mono uppercase focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-[11px] text-slate-400 space-y-1">
-            <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
-              <ShieldCheck className="w-4 h-4" />
-              <span>Fintech Zero-Storage & Name Replacement Guarantee:</span>
+            {/* Password on its own separate line */}
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1">
+                Password (min 8 characters) <span className="text-rose-400">*</span>
+              </label>
+              <input
+                type="password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
             </div>
-            <p>
-              Submit your <strong>NIN (or BVN)</strong>. Verified names will automatically replace the form input to comply with Monnify and CBN anti-fraud rules. Raw numbers are never stored in the database.
-            </p>
-          </div>
 
-          <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-2.5 sm:gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-full sm:w-auto px-4 py-2.5 text-xs font-semibold text-slate-400 hover:text-slate-200 text-center"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading || isVerifyingKyc || (nin.length > 0 && !isNinValid) || (bvn.length > 0 && !isBvnValid)}
-              className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/20 transition-all text-center"
-            >
-              {loading
-                ? 'Verifying & Reserving Accounts...'
-                : hasKyc
-                ? 'Register & Verify NIN (or BVN)'
-                : 'Create Account & Wallet'}
-            </button>
-          </div>
-        </form>
+            {/* Referral Code (Optional) on its own separate line */}
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1">
+                Referral Code <span className="text-slate-500 font-normal">(Optional)</span>
+              </label>
+              <input
+                type="text"
+                value={referralCode}
+                onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+                placeholder="e.g. CHIN8921"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono uppercase placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+
+            {/* Submit Button */}
+            <div className="pt-2">
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm shadow-xl shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                    <span>Creating Account...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Create Account & Wallet</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handleLoginSubmit} className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1">
+                Email Address or Username
+              </label>
+              <input
+                type="text"
+                required
+                value={loginEmailOrPhone}
+                onChange={(e) => setLoginEmailOrPhone(e.target.value)}
+                placeholder="e.g. babatunde@example.ng"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1">
+                Password
+              </label>
+              <input
+                type="password"
+                required
+                placeholder="••••••••"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="submit"
+                className="w-full py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm shadow-xl shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
+              >
+                <LogIn className="w-4 h-4" />
+                <span>Log In to Wallet</span>
+              </button>
+            </div>
+          </form>
+        )}
+
+        <div className="mt-6 text-center text-xs text-slate-500">
+          {mode === 'signup' ? (
+            <span>
+              Already registered?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('login');
+                  setError(null);
+                }}
+                className="text-emerald-400 font-bold hover:underline"
+              >
+                Log In
+              </button>
+            </span>
+          ) : (
+            <span>
+              Need a new wallet?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('signup');
+                  setError(null);
+                }}
+                className="text-emerald-400 font-bold hover:underline"
+              >
+                Sign Up
+              </button>
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
 };
-

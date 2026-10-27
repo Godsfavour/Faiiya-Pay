@@ -233,6 +233,51 @@ class WalletController extends RestControllerBase {
                 'nin' => ['required' => false, 'type' => 'string'],
             ],
         ]);
+
+        // Live Monnify Inbound Payment Polling Listener
+        register_rest_route($this->namespace, '/wallet/check-deposit', [
+            'methods'             => \\WP_REST_Server::READABLE,
+            'callback'            => [$this, 'check_deposit'],
+            'permission_callback' => [$this, 'check_user_permission'],
+            'args'                => [
+                'since' => ['required' => false, 'type' => 'string'],
+            ],
+        ]);
+    }
+
+    public function check_deposit(\\WP_REST_Request $request): \\WP_REST_Response {
+        global $wpdb;
+        $user_id = get_current_user_id();
+        $wallet_model = new WalletModel();
+        $wallet = $wallet_model->ensure_wallet_exists($user_id);
+
+        $table_txns = $wpdb->prefix . 'faiiya_transactions';
+        $since = sanitize_text_field((string) ($request->get_param('since') ?? ''));
+
+        $sql = "SELECT * FROM {$table_txns} WHERE user_id = %d AND type = 'deposit' AND status = 'completed'";
+        $params = [$user_id];
+        if (!empty($since)) {
+            $sql .= " AND created_at >= %s";
+            $params[] = $since;
+        }
+        $sql .= " ORDER BY id DESC LIMIT 1";
+
+        $latest = $wpdb->get_row($wpdb->prepare($sql, ...$params));
+
+        if ($latest) {
+            return $this->success([
+                'funded'        => true,
+                'amount'        => (float) $latest->amount,
+                'reference'     => $latest->reference,
+                'balance_after' => (float) $latest->balance_after,
+                'created_at'    => $latest->created_at,
+            ]);
+        }
+
+        return $this->success([
+            'funded'  => false,
+            'balance' => (float) $wallet->balance,
+        ]);
     }
 
     public function get_balance(\\WP_REST_Request $request): \\WP_REST_Response {

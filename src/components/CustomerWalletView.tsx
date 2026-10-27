@@ -29,6 +29,7 @@ import {
   X,
   CreditCard,
   Send,
+  ArrowRight,
 } from 'lucide-react';
 import { faiiyaEngine } from '../services/faiiyaEngine';
 import { User, TransactionType, WithdrawalRequest } from '../types';
@@ -58,9 +59,12 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<TransactionType | 'all'>('all');
   const [isTopUpOpen, setIsTopUpOpen] = useState(false);
-  const [topUpAmount, setTopUpAmount] = useState<number>(50000);
+  const [fundStep, setFundStep] = useState<'amount' | 'waiting' | 'success'>('amount');
+  const [topUpAmount, setTopUpAmount] = useState<number>(5000);
   const [customAmount, setCustomAmount] = useState<string>('');
   const [selectedBank, setSelectedBank] = useState<string>('Wema Bank (ALAT)');
+  const [fundSuccessTxn, setFundSuccessTxn] = useState<any>(null);
+  const [isCheckingPayment, setIsCheckingPayment] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [hideBalance, setHideBalance] = useState<boolean>(false);
 
@@ -77,7 +81,8 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
 
   const wallet = faiiyaEngine.getWallet(currentUser.id);
   const isFrozen = wallet.status === 'frozen';
-  const isKycVerified = wallet.kycStatus === 'verified' && currentUser.kycStatus !== 'unverified';
+  const virtualAccounts = faiiyaEngine.getVirtualAccounts(currentUser.id);
+  const isKycVerified = (wallet.kycStatus === 'verified' || virtualAccounts.length > 0) && currentUser.kycStatus !== 'unverified';
 
   // KYC Verification state: NIN is primary / shown first!
   const [kycType, setKycType] = useState<'nin' | 'bvn'>('nin');
@@ -85,8 +90,6 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
   const [kycError, setKycError] = useState<string | null>(null);
   const [showVerifiedCard, setShowVerifiedCard] = useState<boolean>(false);
-
-  const virtualAccounts = faiiyaEngine.getVirtualAccounts(currentUser.id);
   const transactions = faiiyaEngine.getTransactions(
     currentUser.id,
     filterType === 'all' ? undefined : filterType
@@ -185,16 +188,16 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
     }
 
     try {
-      faiiyaEngine.simulateMonnifyTransferDeposit({
+      const txn = faiiyaEngine.simulateMonnifyTransferDeposit({
         userId: currentUser.id,
         amount,
         bankName,
         accountNumber: accNum,
       });
 
-      setIsTopUpOpen(false);
-      setCustomAmount('');
-      showToast(`✓ Inbound transfer of ₦${amount.toLocaleString()} received and credited to your wallet!`);
+      setFundSuccessTxn(txn);
+      setFundStep('success');
+      showToast(`✓ Monnify Payment Received: ₦${amount.toLocaleString()} credited to your wallet!`);
     } catch (err: any) {
       alert(err.message);
     }
@@ -707,107 +710,259 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
         )}
       </div>
 
-      {/* TOP UP MODAL (SIMULATED MONNIFY BANK TRANSFER) */}
+      {/* FUND WALLET / ADD MONEY MODAL (2-Step Workflow with Monnify Live Waiting Animation) */}
       {isTopUpOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative">
             <button
-              onClick={() => setIsTopUpOpen(false)}
-              className="absolute top-5 right-5 p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800"
+              onClick={() => {
+                setIsTopUpOpen(false);
+                setFundStep('amount');
+                setFundSuccessTxn(null);
+              }}
+              className="absolute top-5 right-5 p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
 
-            <div className="flex items-center gap-3 mb-5">
-              <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                <ArrowDownLeft className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">Simulate Bank Transfer Inflow</h3>
-                <p className="text-xs text-slate-400">Monnify Dedicated Virtual Account Deposit</p>
-              </div>
-            </div>
+            {fundStep === 'amount' && (
+              <div className="space-y-5">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                    <ArrowDownLeft className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-white">Fund Your Wallet</h3>
+                    <p className="text-xs text-slate-400">Step 1 of 2: Specify the deposit amount to add</p>
+                  </div>
+                </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-2xs uppercase tracking-wider text-slate-400 font-bold mb-1.5">
-                  Select Destination Virtual Account
-                </label>
-                <select
-                  value={selectedBank}
-                  onChange={(e) => setSelectedBank(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white"
+                <div>
+                  <label className="block text-2xs uppercase tracking-wider text-slate-400 font-bold mb-2">
+                    Quick Preset Amounts
+                  </label>
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                    {[2000, 5000, 10000, 20000, 50000].map((amt) => (
+                      <button
+                        key={amt}
+                        type="button"
+                        onClick={() => {
+                          setTopUpAmount(amt);
+                          setCustomAmount('');
+                        }}
+                        className={`py-2.5 rounded-xl text-xs font-bold transition-all ${
+                          topUpAmount === amt && !customAmount
+                            ? 'bg-emerald-500 text-slate-950 shadow-md font-extrabold'
+                            : 'bg-slate-800 text-slate-300 hover:text-white'
+                        }`}
+                      >
+                        ₦{amt.toLocaleString()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-2xs uppercase tracking-wider text-slate-400 font-bold mb-1.5">
+                    Or Enter Custom Amount (NGN)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-2.5 text-sm font-bold text-slate-400">₦</span>
+                    <input
+                      type="number"
+                      placeholder="e.g. 15000"
+                      value={customAmount}
+                      onChange={(e) => setCustomAmount(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-8 pr-3 py-2.5 text-sm text-white font-mono font-bold focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-slate-400 space-y-1.5">
+                  <div className="flex justify-between">
+                    <span>Deposit Amount:</span>
+                    <span className="font-mono font-bold text-white">
+                      ₦{(customAmount ? parseFloat(customAmount) || 0 : topUpAmount).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Monnify Processing Fee:</span>
+                    <span className="font-mono text-emerald-400 font-semibold">
+                      {settings.feeBearer === 'merchant' ? '₦0 (Absorbed by Merchant)' : 'Deducted from Credit'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between border-t border-slate-800/80 pt-1.5 font-bold text-white">
+                    <span>Net Wallet Credit:</span>
+                    <span className="font-mono text-emerald-400">
+                      ₦{(customAmount ? parseFloat(customAmount) || 0 : topUpAmount).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const amt = customAmount ? parseFloat(customAmount) : topUpAmount;
+                    if (isNaN(amt) || amt <= 0) {
+                      alert('Please select or enter a valid funding amount.');
+                      return;
+                    }
+                    setFundStep('waiting');
+                  }}
+                  className="w-full py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm shadow-xl shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
                 >
-                  {virtualAccounts.map((va) => (
-                    <option key={va.id} value={va.bankName}>
-                      {va.bankName} - {va.accountNumber} ({va.accountName})
-                    </option>
-                  ))}
-                </select>
+                  <span>Proceed to Dedicated Bank Account</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
               </div>
+            )}
 
-              <div>
-                <label className="block text-2xs uppercase tracking-wider text-slate-400 font-bold mb-1.5">
-                  Select Amount (NGN)
-                </label>
-                <div className="grid grid-cols-4 gap-2 mb-2">
-                  {[10000, 25000, 50000, 100000].map((amt) => (
+            {fundStep === 'waiting' && (() => {
+              const targetVa = virtualAccounts.find((va) => va.bankName === selectedBank) || virtualAccounts[0] || {
+                bankName: 'Wema Bank (ALAT)',
+                accountNumber: '9981240182',
+                accountName: currentUser.firstName,
+              };
+              const amt = customAmount ? parseFloat(customAmount) : topUpAmount;
+
+              return (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-2xs font-extrabold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-3 py-1 rounded-xl">
+                      Step 2 of 2: Inbound Bank Transfer
+                    </span>
                     <button
-                      key={amt}
                       type="button"
-                      onClick={() => {
-                        setTopUpAmount(amt);
-                        setCustomAmount('');
-                      }}
-                      className={`py-2 rounded-xl text-xs font-bold transition-all ${
-                        topUpAmount === amt && !customAmount
-                          ? 'bg-emerald-500 text-slate-950 shadow-md'
-                          : 'bg-slate-800 text-slate-300 hover:text-white'
-                      }`}
+                      onClick={() => setFundStep('amount')}
+                      className="text-xs text-slate-400 hover:text-white underline"
                     >
-                      ₦{(amt / 1000).toFixed(0)}k
+                      Change Amount
                     </button>
-                  ))}
+                  </div>
+
+                  {/* Bank Account Details Card */}
+                  <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-2xs font-bold uppercase tracking-wider text-slate-400">Destination Bank</span>
+                      {virtualAccounts.length > 1 ? (
+                        <select
+                          value={selectedBank}
+                          onChange={(e) => setSelectedBank(e.target.value)}
+                          className="bg-slate-900 border border-slate-700 text-white rounded-lg text-xs font-semibold px-2.5 py-1"
+                        >
+                          {virtualAccounts.map((va) => (
+                            <option key={va.id} value={va.bankName}>
+                              {va.bankName}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-xs font-bold text-emerald-400">{targetVa.bankName}</span>
+                      )}
+                    </div>
+
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
+                      <div>
+                        <div className="text-2xs text-slate-400 uppercase font-bold">Account Number</div>
+                        <div className="text-2xl font-black text-white font-mono tracking-wider">
+                          {targetVa.accountNumber}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(targetVa.accountNumber, 'fund-acc')}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                      >
+                        {copiedKey === 'fund-acc' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedKey === 'fund-acc' ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="bg-slate-900/60 p-2.5 rounded-xl border border-slate-800">
+                        <div className="text-2xs text-slate-500 font-semibold">Account Name</div>
+                        <div className="text-white font-bold truncate">{targetVa.accountName}</div>
+                      </div>
+                      <div className="bg-slate-900/60 p-2.5 rounded-xl border border-slate-800">
+                        <div className="text-2xs text-slate-500 font-semibold">Exact Amount to Pay</div>
+                        <div className="text-emerald-400 font-bold font-mono">₦{amt.toLocaleString()}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* LIVE WAITING FOR PAYMENT RADAR ANIMATION */}
+                  <div className="text-center py-3 px-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl relative overflow-hidden">
+                    <div className="relative w-20 h-20 mx-auto flex items-center justify-center my-2">
+                      <div className="absolute inset-0 rounded-full bg-emerald-500/20 animate-ping opacity-75" />
+                      <div className="absolute inset-2 rounded-full bg-emerald-500/30 animate-pulse" />
+                      <div className="w-12 h-12 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-400 shadow-lg shadow-emerald-500/30">
+                        <RefreshCw className="w-6 h-6 animate-spin" />
+                      </div>
+                    </div>
+
+                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold mb-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                      <span>Waiting for Monnify Payment Notification...</span>
+                    </div>
+
+                    <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+                      Transfer <strong className="text-white font-mono">₦{amt.toLocaleString()}</strong> to the account above via any Nigerian bank app or USSD. Monnify automatically verifies the inbound transaction and credits your wallet immediately.
+                    </p>
+                  </div>
+
+                  {/* Immediate Simulation / Trigger Action */}
+                  <button
+                    type="button"
+                    onClick={() => handleSimulateDeposit(targetVa.bankName, targetVa.accountNumber)}
+                    className="w-full py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm shadow-xl shadow-emerald-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>Simulate Inbound Payment Received (Instant Trigger)</span>
+                  </button>
+                </div>
+              );
+            })()}
+
+            {fundStep === 'success' && (
+              <div className="text-center py-4 space-y-4 animate-in zoom-in-95 duration-200">
+                <div className="w-16 h-16 rounded-full bg-emerald-500/10 border-2 border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto shadow-xl shadow-emerald-500/20">
+                  <CheckCircle2 className="w-9 h-9" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-white">Payment Received & Credited!</h3>
+                  <p className="text-xs text-slate-300 mt-1">
+                    Monnify confirmed inbound bank transfer. Your wallet balance has been updated.
+                  </p>
                 </div>
 
-                <input
-                  type="number"
-                  placeholder="Or enter custom amount in NGN..."
-                  value={customAmount}
-                  onChange={(e) => setCustomAmount(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono"
-                />
+                <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 text-xs text-left space-y-2 font-mono">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Reference:</span>
+                    <span className="text-white font-bold">{fundSuccessTxn?.reference || 'MNFY_PAYMENT'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Amount Credited:</span>
+                    <span className="text-emerald-400 font-bold">₦{fundSuccessTxn?.amount?.toLocaleString() || topUpAmount.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-slate-800 pt-1.5 font-bold">
+                    <span className="text-slate-400">New Available Balance:</span>
+                    <span className="text-white font-black text-sm">₦{wallet.balance.toLocaleString()} NGN</span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsTopUpOpen(false);
+                    setFundStep('amount');
+                    setFundSuccessTxn(null);
+                  }}
+                  className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-2xl text-sm transition-all"
+                >
+                  Done
+                </button>
               </div>
-
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-400 space-y-1">
-                <div className="flex justify-between">
-                  <span>Gross Transfer:</span>
-                  <span className="font-mono text-white">
-                    ₦{(customAmount ? parseFloat(customAmount) : topUpAmount).toLocaleString()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Gateway Fee:</span>
-                  <span className="font-mono text-emerald-400">
-                    {settings.feeBearer === 'merchant' ? '₦0 (Absorbed by Merchant)' : 'Deducted from Credit'}
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const targetVa = virtualAccounts.find((va) => va.bankName === selectedBank) || virtualAccounts[0];
-                  if (targetVa) {
-                    handleSimulateDeposit(targetVa.bankName, targetVa.accountNumber);
-                  }
-                }}
-                className="w-full py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2"
-              >
-                <Building2 className="w-4 h-4" />
-                <span>Simulate Monnify Bank Transfer Credit</span>
-              </button>
-            </div>
+            )}
           </div>
         </div>
       )}
