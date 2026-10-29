@@ -7,6 +7,7 @@ use FaiiyaPay\Models\WalletModel;
 use FaiiyaPay\Models\VirtualAccountModel;
 use FaiiyaPay\Models\TransactionModel;
 use FaiiyaPay\Models\ReferralModel;
+use FaiiyaPay\Services\MonnifyService;
 
 defined('ABSPATH') || exit;
 
@@ -116,7 +117,15 @@ class Shortcodes {
                     <label style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">
                         <?php esc_html_e('Password (min 8 characters)', 'faiiya-pay'); ?> *
                     </label>
-                    <input type="password" name="password" minlength="8" required style="width: 100%; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 14px; box-sizing: border-box;" placeholder="••••••••" />
+                    <div style="position: relative; display: flex; align-items: center;">
+                        <input type="password" name="password" id="faiiya-reg-password" minlength="8" required style="width: 100%; padding: 12px 44px 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 14px; box-sizing: border-box;" placeholder="••••••••" />
+                        <button type="button" id="faiiya-reg-password-toggle" style="position: absolute; right: 10px; background: none; border: none; cursor: pointer; color: #64748b; padding: 6px; display: flex; align-items: center; justify-content: center;" title="<?php esc_attr_e('Show / Hide Password', 'faiiya-pay'); ?>" aria-label="<?php esc_attr_e('Toggle password visibility', 'faiiya-pay'); ?>">
+                            <svg id="faiiya-pwd-eye-icon" style="width: 18px; height: 18px;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
 
                 <div>
@@ -212,6 +221,22 @@ class Shortcodes {
                     submitBtn.innerText = '<?php echo esc_js(__('Create Account & Wallet →', 'faiiya-pay')); ?>';
                 }
             });
+
+            // Password Visibility Toggle
+            const pwdInput = document.getElementById('faiiya-reg-password');
+            const pwdToggle = document.getElementById('faiiya-reg-password-toggle');
+            if (pwdInput && pwdToggle) {
+                pwdToggle.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    if (pwdInput.type === 'password') {
+                        pwdInput.type = 'text';
+                        pwdToggle.innerHTML = '<svg style="width: 18px; height: 18px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"></path></svg>';
+                    } else {
+                        pwdInput.type = 'password';
+                        pwdToggle.innerHTML = '<svg style="width: 18px; height: 18px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>';
+                    }
+                });
+            }
         })();
         </script>
         <?php
@@ -239,15 +264,57 @@ class Shortcodes {
 
         $wallet_model = new WalletModel();
         $wallet = $wallet_model->ensure_wallet_exists($user_id);
-        $kyc_status = $wallet->kyc_status ?? 'unverified';
-        $is_verified = ($kyc_status === 'verified' || $kyc_status === 'tier1_verified' || !empty($virtual_accounts));
 
         $va_model = new VirtualAccountModel();
         $virtual_accounts = $va_model->get_user_accounts($user_id);
 
+        // If virtual accounts already exist in DB, ensure wallet is marked verified
+        if (!empty($virtual_accounts) && ($wallet->kyc_status ?? '') !== 'verified') {
+            $wallet_model->update_kyc_status($user_id, 'verified');
+            $wallet->kyc_status = 'verified';
+            update_user_meta($user_id, 'faiiya_kyc_status', 'verified');
+        }
+
+        // If virtual accounts are empty, query Monnify live to check if account was already verified/upgraded
+        if (empty($virtual_accounts)) {
+            $monnify_service = new MonnifyService();
+            if ($monnify_service->is_configured()) {
+                $account_ref = get_user_meta($user_id, '_faiiya_account_reference', true) ?: ('FP_VA_' . $user_id);
+                $monnify_data = $monnify_service->get_reserved_account((string) $account_ref);
+                if (!empty($monnify_data) && !empty($monnify_data['accounts'])) {
+                    $va_model->save_accounts($user_id, $monnify_data);
+                    $virtual_accounts = $va_model->get_user_accounts($user_id);
+                    $wallet_model->update_kyc_status($user_id, 'verified');
+                    $wallet->kyc_status = 'verified';
+                    update_user_meta($user_id, 'faiiya_kyc_status', 'verified');
+                }
+            }
+        }
+
+        $kyc_status = $wallet->kyc_status ?? 'unverified';
+        $meta_status = get_user_meta($user_id, 'faiiya_kyc_status', true);
+        $is_verified = (!empty($virtual_accounts) || $kyc_status === 'verified' || $kyc_status === 'tier1_verified' || $meta_status === 'verified');
+
+        // Automatic Self-Healing Sync: If user is verified, query Monnify for any incoming deposits made while offline
+        if ($is_verified) {
+            $monnify_service = new MonnifyService();
+            if ($monnify_service->is_configured()) {
+                $monnify_service->sync_customer_reserved_transactions($user_id);
+            }
+        }
+
+        // Always fetch fresh wallet record from database (ensures admin manual adjustments reflect immediately)
+        $wallet = $wallet_model->get_wallet($user_id) ?: $wallet_model->ensure_wallet_exists($user_id);
+
         $txn_model = new TransactionModel();
         $transactions_data = $txn_model->get_user_transactions($user_id, 1, 10);
         $transactions = $transactions_data['transactions'] ?? [];
+
+        global $wpdb;
+        $latest_txn_id = (int) $wpdb->get_var(
+            $wpdb->prepare("SELECT COALESCE(MAX(id), 0) FROM {$wpdb->prefix}faiiya_transactions WHERE user_id = %d", $user_id)
+        );
+        $server_now = current_time('mysql');
 
         $ref_model = new ReferralModel();
         $ref_stats = $ref_model->get_stats($user_id);
@@ -273,29 +340,25 @@ class Shortcodes {
                 }
             </style>
             
-            <!-- KYC Status Header Banner -->
-            <div id="faiiya-kyc-banner" style="background: <?php echo $is_verified ? '#f0fdf4' : '#fffbeb'; ?>; border: 1px solid <?php echo $is_verified ? '#bbf7d0' : '#fef3c7'; ?>; border-radius: 12px; padding: 14px 20px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+            <!-- KYC Status Header Banner (Only shown if unverified) -->
+            <div id="faiiya-kyc-banner" style="display: <?php echo $is_verified ? 'none' : 'flex'; ?>; background: #fffbeb; border: 1px solid #fef3c7; border-radius: 12px; padding: 14px 20px; margin-bottom: 20px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; transition: all 0.3s ease;">
                 <div style="display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 20px;"><?php echo $is_verified ? '🛡️' : '⚠️'; ?></span>
+                    <span id="faiiya-kyc-icon" style="font-size: 20px;">⚠️</span>
                     <div>
-                        <div style="font-size: 14px; font-weight: 700; color: <?php echo $is_verified ? '#166534' : '#92400e'; ?>;">
-                            <?php echo $is_verified 
-                                ? sprintf(esc_html__('Verified KYC Profile: %s', 'faiiya-pay'), esc_html("{$user->first_name} {$user->last_name}"))
-                                : esc_html__('KYC Verification Pending (Tier 1)', 'faiiya-pay'); ?>
+                        <div id="faiiya-kyc-title" style="font-size: 14px; font-weight: 700; color: #92400e;">
+                            <?php esc_html_e('KYC Verification Pending (Tier 1)', 'faiiya-pay'); ?>
                         </div>
-                        <div style="font-size: 12px; color: <?php echo $is_verified ? '#15803d' : '#b45309'; ?>;">
-                            <?php echo $is_verified
-                                ? esc_html__('Strict Monnify name sync active. Dedicated bank transfer accounts enabled.', 'faiiya-pay')
-                                : esc_html__('Bank transfer deposit accounts are locked until your identity is verified with NIN or BVN.', 'faiiya-pay'); ?>
+                        <div id="faiiya-kyc-desc" style="font-size: 12px; color: #b45309;">
+                            <?php esc_html_e('Bank transfer deposit accounts are locked until your identity is verified with your National Identity Number (NIN).', 'faiiya-pay'); ?>
                         </div>
                     </div>
                 </div>
-                <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 4px 10px; border-radius: 20px; background: <?php echo $is_verified ? '#dcfce7' : '#fde68a'; ?>; color: <?php echo $is_verified ? '#166534' : '#92400e'; ?>;">
-                    <span id="kyc-badge-text"><?php echo esc_html(strtoupper($is_verified ? 'verified' : 'unverified')); ?></span>
+                <div id="faiiya-kyc-badge-wrap" style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 4px 10px; border-radius: 20px; background: #fde68a; color: #92400e;">
+                    <span id="kyc-badge-text"><?php esc_html_e('UNVERIFIED', 'faiiya-pay'); ?></span>
                 </div>
             </div>
 
-            <!-- UNVERIFIED: LOCKED STATE UI (Module D) - Mobile Responsive, Shows NIN First then "or BVN" -->
+            <!-- UNVERIFIED: LOCKED STATE UI (Module D) - Mobile Responsive National Identification Number (NIN) -->
             <div id="faiiya-locked-kyc-card" style="display: <?php echo $is_verified ? 'none' : 'block'; ?>; background: #ffffff; border: 1px solid #fed7aa; border-radius: 16px; padding: 28px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); box-sizing: border-box;">
                 <div class="faiiya-kyc-wrap" style="display: flex; gap: 16px; align-items: flex-start;">
                     <div style="background: #ffedd5; color: #ea580c; width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0;">
@@ -303,36 +366,27 @@ class Shortcodes {
                     </div>
                     <div style="flex: 1; min-width: 0;">
                         <h3 style="margin: 0 0 6px 0; font-size: 18px; font-weight: 800; color: #9a3412;">
-                            <?php esc_html_e('Unlock Virtual Bank Accounts with NIN (or BVN)', 'faiiya-pay'); ?>
+                            <?php esc_html_e('Unlock Virtual Bank Accounts with National ID (NIN)', 'faiiya-pay'); ?>
                         </h3>
                         <p style="margin: 0 0 16px 0; font-size: 13px; color: #4b5563; line-height: 1.5;">
-                            <?php esc_html_e('In compliance with Central Bank of Nigeria (CBN) and NDPR data regulations, submit your National Identity Number (NIN) or Bank Verification Number (BVN) below. We will provision your dedicated Monnify bank transfer accounts and activate your wallet immediately.', 'faiiya-pay'); ?>
+                            <?php esc_html_e('In compliance with Central Bank of Nigeria (CBN) and NDPR data regulations, submit your 11-digit National Identity Number (NIN) below. We will provision your dedicated Monnify bank transfer accounts and activate your wallet immediately.', 'faiiya-pay'); ?>
                         </p>
 
                         <!-- Zero-Storage Guarantee Badge -->
                         <div style="display: inline-flex; align-items: center; gap: 6px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 12px; font-size: 11px; color: #475569; margin-bottom: 18px; max-width: 100%; box-sizing: border-box; flex-wrap: wrap;">
                             <span>🔒</span>
-                            <span><?php esc_html_e('Zero-Storage Guarantee: Your NIN/BVN is verified via Monnify API and never stored on this server.', 'faiiya-pay'); ?></span>
+                            <span><?php esc_html_e('Zero-Storage Guarantee: Your NIN is verified directly with NIMC via Monnify API and never stored on this server.', 'faiiya-pay'); ?></span>
                         </div>
 
                         <div id="faiiya-kyc-form-alert" style="display: none; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;"></div>
 
                         <form id="faiiya-kyc-verify-form" style="display: flex; flex-direction: column; gap: 14px; max-width: 520px;">
-                            <div class="faiiya-radio-row" style="display: flex; gap: 16px; font-size: 13px; flex-wrap: wrap;">
-                                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; color: #0f172a;">
-                                    <input type="radio" name="kyc_type" value="nin" checked />
-                                    <span><?php esc_html_e('National ID Number (NIN)', 'faiiya-pay'); ?></span>
-                                </label>
-                                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: #334155;">
-                                    <input type="radio" name="kyc_type" value="bvn" />
-                                    <span><?php esc_html_e('or Bank Verification Number (BVN)', 'faiiya-pay'); ?></span>
-                                </label>
-                            </div>
+                            <input type="hidden" name="kyc_type" value="nin" />
 
                             <div class="faiiya-kyc-input-row" style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                <input type="text" id="kyc_id_input" name="kyc_id" required maxlength="11" minlength="11" pattern="\d{11}" placeholder="<?php esc_attr_e('Enter 11-digit NIN (or BVN)', 'faiiya-pay'); ?>" style="flex: 1; min-width: 200px; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; letter-spacing: 0.05em; font-family: monospace; box-sizing: border-box;" />
+                                <input type="text" id="kyc_id_input" name="kyc_id" required maxlength="11" minlength="11" pattern="\d{11}" placeholder="<?php esc_attr_e('Enter 11-digit NIN', 'faiiya-pay'); ?>" style="flex: 1; min-width: 200px; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; letter-spacing: 0.05em; font-family: monospace; box-sizing: border-box;" />
                                 <button type="submit" id="faiiya-kyc-submit-btn" style="background: #059669; color: #ffffff; border: none; padding: 12px 20px; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 44px; box-sizing: border-box;">
-                                    <?php esc_html_e('Verify NIN (or BVN) & Unlock →', 'faiiya-pay'); ?>
+                                    <?php esc_html_e('Verify NIN & Unlock →', 'faiiya-pay'); ?>
                                 </button>
                             </div>
                         </form>
@@ -342,14 +396,37 @@ class Shortcodes {
 
             <!-- UNLOCKED / VERIFIED WALLET INTERFACE (Module D) -->
             <div id="faiiya-unlocked-section" style="display: <?php echo $is_verified ? 'block' : 'none'; ?>;">
-                <!-- Balance Banner -->
-                <div style="background: linear-gradient(135deg, #059669 0%, #0d9488 100%); color: #ffffff; padding: 28px; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(5, 150, 105, 0.3); margin-bottom: 24px;">
-                    <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.9; margin-bottom: 6px;">
+                <!-- Account Details & Clean Balance Card -->
+                <div style="background: linear-gradient(135deg, #059669 0%, #0d9488 100%); color: #ffffff; padding: 24px 28px; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(5, 150, 105, 0.3); margin-bottom: 24px;">
+                    <!-- Full Profile Name at top of Account Details -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.2); padding-bottom: 10px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 16px;">👤</span>
+                            <span id="faiiya-profile-fullname" style="font-size: 16px; font-weight: 800; color: #ffffff; letter-spacing: -0.01em;">
+                                <?php echo esc_html(trim("{$user->first_name} {$user->last_name}") ?: $user->display_name); ?>
+                            </span>
+                        </div>
+                        <span style="font-size: 11px; font-weight: 700; opacity: 0.85; letter-spacing: 0.05em; text-transform: uppercase;">
+                            <?php esc_html_e('FAIIYA WALLET', 'faiiya-pay'); ?>
+                        </span>
+                    </div>
+
+                    <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.9; margin-bottom: 4px;">
                         <?php esc_html_e('Available Wallet Balance', 'faiiya-pay'); ?>
                     </div>
-                    <div style="font-size: 38px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 14px;">
-                        ₦<span id="faiiya-live-balance"><?php echo number_format((float) $wallet->balance, 2); ?></span>
+
+                    <div style="font-size: 38px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 6px; line-height: 1.1;">
+                        ₦<span id="faiiya-live-balance"><?php echo number_format($wallet_model->get_balance($user_id), 2); ?></span>
                     </div>
+
+                    <!-- Clean Verified Status badge directly under Amount -->
+                    <div style="margin-bottom: 16px;">
+                        <div style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(4px); padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; color: #ffffff;">
+                            <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34d399;"></span>
+                            <span id="faiiya-card-kyc-status"><?php echo esc_html($is_verified ? 'Verified (Tier 1)' : 'Pending Verification'); ?></span>
+                        </div>
+                    </div>
+
                     <div style="display: flex; gap: 12px; flex-wrap: wrap;">
                         <button type="button" id="faiiya-open-fund-modal-btn" style="background: #ffffff; color: #065f46; border: none; padding: 10px 18px; border-radius: 8px; font-weight: 700; font-size: 14px; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
                             + <?php esc_html_e('Fund Account', 'faiiya-pay'); ?>
@@ -372,27 +449,32 @@ class Shortcodes {
                         <?php esc_html_e('Transfer funds to any of your dedicated Monnify accounts below. Your wallet will be credited automatically and instantly.', 'faiiya-pay'); ?>
                     </p>
 
-                    <div id="faiiya-va-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px;">
+                    <div id="faiiya-va-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px;">
                         <?php if (!empty($virtual_accounts)) : ?>
                             <?php foreach ($virtual_accounts as $acc) : ?>
-                                <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px; position: relative;">
-                                    <div style="font-size: 12px; font-weight: 600; color: #059669; margin-bottom: 4px;">
-                                        <?php echo esc_html($acc['bank_name']); ?>
+                                <div style="background: #ffffff; border: 1.5px solid #cbd5e1; border-radius: 12px; padding: 18px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                        <span style="font-size: 13px; font-weight: 700; color: #059669; text-transform: uppercase; letter-spacing: 0.05em;"><?php echo esc_html($acc['bank_name']); ?></span>
+                                        <span style="background: #ecfdf5; color: #065f46; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; border: 1px solid #a7f3d0;">ACTIVE NUBAN</span>
                                     </div>
-                                    <div style="font-size: 20px; font-weight: 700; color: #0f172a; font-family: monospace; letter-spacing: 0.05em; margin-bottom: 4px;">
+                                    <div style="font-size: 24px; font-weight: 800; color: #0f172a; font-family: monospace; letter-spacing: 0.06em; margin-bottom: 12px;">
                                         <?php echo esc_html($acc['account_number']); ?>
                                     </div>
-                                    <div style="font-size: 12px; color: #64748b; margin-bottom: 10px;">
-                                        <?php echo esc_html($acc['account_name']); ?>
+
+                                    <!-- Prominent Account Name Display -->
+                                    <div style="background: #f1f5f9; border-left: 3px solid #0284c7; padding: 8px 12px; border-radius: 0 6px 6px 0; margin-bottom: 14px;">
+                                        <div style="font-size: 10px; text-transform: uppercase; font-weight: 700; color: #64748b; letter-spacing: 0.04em;"><?php esc_html_e('Account Name (Destination):', 'faiiya-pay'); ?></div>
+                                        <div style="font-size: 13px; font-weight: 800; color: #0f172a; word-break: break-word;"><?php echo esc_html($acc['account_name'] ?: ($user->first_name . ' ' . $user->last_name)); ?></div>
                                     </div>
-                                    <button type="button" onclick="navigator.clipboard.writeText('<?php echo esc_attr($acc['account_number']); ?>'); alert('Account number copied: <?php echo esc_attr($acc['account_number']); ?>');" style="background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; padding: 5px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; cursor: pointer;">
+
+                                    <button type="button" onclick="navigator.clipboard.writeText('<?php echo esc_attr($acc['account_number']); ?>'); this.innerText='✓ Copied!'; setTimeout(() => this.innerText='📋 Copy Number', 2000);" style="width: 100%; background: #f8fafc; color: #334155; border: 1px solid #cbd5e1; padding: 8px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; transition: background 0.15s;">
                                         📋 <?php esc_html_e('Copy Number', 'faiiya-pay'); ?>
                                     </button>
                                 </div>
                             <?php endforeach; ?>
                         <?php else : ?>
-                            <div style="padding: 12px; background: #f1f5f9; border-radius: 6px; font-size: 13px; color: #475569;">
-                                <?php esc_html_e('Virtual accounts will appear here once KYC verification is completed.', 'faiiya-pay'); ?>
+                            <div style="padding: 16px; background: #f1f5f9; border-radius: 8px; font-size: 13px; color: #475569; grid-column: 1 / -1;">
+                                <?php esc_html_e('Virtual accounts will appear here immediately once your NIN is verified below.', 'faiiya-pay'); ?>
                             </div>
                         <?php endif; ?>
                     </div>
@@ -436,7 +518,15 @@ class Shortcodes {
                                 </thead>
                                 <tbody>
                                     <?php foreach ($transactions as $txn) : 
-                                        $is_positive = in_array($txn['type'], ['deposit', 'referral_bonus', 'refund']);
+                                        $is_positive = in_array($txn['type'], ['deposit', 'referral_bonus', 'refund'], true);
+                                        if ($txn['type'] === 'admin_adjustment') {
+                                            $meta = !empty($txn['metadata']) ? (is_string($txn['metadata']) ? json_decode($txn['metadata'], true) : $txn['metadata']) : [];
+                                            if (isset($meta['direction'])) {
+                                                $is_positive = ($meta['direction'] === 'credit');
+                                            } else {
+                                                $is_positive = ((float) ($txn['balance_after'] ?? 0) >= (float) ($txn['balance_before'] ?? 0));
+                                            }
+                                        }
                                         $type_labels = [
                                             'deposit'          => __('Deposit', 'faiiya-pay'),
                                             'debit_order'      => __('Order Payment', 'faiiya-pay'),
@@ -574,23 +664,20 @@ class Shortcodes {
                             </div>
                         </div>
 
-                        <!-- Radar Waiting Animation Box -->
-                        <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 18px;">
-                            <div style="display: flex; justify-content: center; margin-bottom: 12px;">
-                                <div class="faiiya-radar-circle" style="width: 44px; height: 44px; border-radius: 50%; background: #059669; color: #ffffff; display: flex; align-items: center; justify-content: center; font-size: 20px;">
-                                    ⚡
+                        <!-- Clean Waiting For Payment State -->
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px 16px; text-align: center; margin-bottom: 18px;">
+                            <div style="display: flex; justify-content: center; margin-bottom: 10px;">
+                                <div class="faiiya-radar-circle" style="width: 40px; height: 40px; border-radius: 50%; background: #059669; color: #ffffff; display: flex; align-items: center; justify-content: center; font-size: 18px;">
+                                    ⏳
                                 </div>
                             </div>
-                            <div style="font-size: 14px; font-weight: 700; color: #166534; margin-bottom: 4px;">
-                                <?php esc_html_e('Waiting for Monnify Payment Notification...', 'faiiya-pay'); ?>
+                            <div style="font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 4px;">
+                                <?php esc_html_e('Waiting for payment...', 'faiiya-pay'); ?>
                             </div>
-                            <div style="font-size: 12px; color: #15803d; line-height: 1.4;">
-                                <?php esc_html_e('Listening live. Make the bank transfer now. Your wallet will automatically update the moment Monnify confirms the transaction.', 'faiiya-pay'); ?>
+                            <div style="font-size: 12px; color: #64748b;">
+                                <?php esc_html_e('Transfer to the account above. Your wallet balance will automatically update once received.', 'faiiya-pay'); ?>
                             </div>
-                            <div style="margin-top: 10px; font-size: 11px; color: #047857; font-family: monospace;">
-                                <span class="faiiya-live-dot" style="display: inline-block; width: 8px; height: 8px; background: #10b981; border-radius: 50%; margin-right: 6px;"></span>
-                                <?php esc_html_e('Status: Actively polling Monnify every 3 seconds', 'faiiya-pay'); ?>
-                            </div>
+                            <div id="faiiya-check-status-msg" style="display: none; margin-top: 8px; font-size: 11px; color: #059669; font-weight: 600;"></div>
                         </div>
 
                         <div style="display: flex; gap: 8px;">
@@ -642,14 +729,15 @@ class Shortcodes {
             if (kycForm) {
                 kycForm.addEventListener('submit', async function(e) {
                     e.preventDefault();
-                    const kycType = kycForm.querySelector('input[name="kyc_type"]:checked').value;
-                    const kycVal = inputField.value.trim();
+                    const kycTypeEl = kycForm.querySelector('input[name="kyc_type"]');
+                    const kycType = kycTypeEl ? kycTypeEl.value : 'nin';
+                    const kycVal = inputField.value.trim().replace(/D/g, '');
 
                     if (kycVal.length !== 11) {
                         alertBox.style.display = 'block';
                         alertBox.style.background = '#fef2f2';
                         alertBox.style.color = '#991b1b';
-                        alertBox.innerText = '<?php echo esc_js(__('Please enter an exact 11-digit number.', 'faiiya-pay')); ?>';
+                        alertBox.innerText = '<?php echo esc_js(__('Please enter an exact 11-digit NIN.', 'faiiya-pay')); ?>';
                         return;
                     }
 
@@ -673,21 +761,41 @@ class Shortcodes {
                         const resData = await response.json();
 
                         if (response.ok && resData.status === 'success') {
-                            document.getElementById('faiiya-locked-kyc-card').style.display = 'none';
-                            document.getElementById('faiiya-unlocked-section').style.display = 'block';
-                            document.getElementById('kyc-badge-text').innerText = 'VERIFIED';
-                            document.getElementById('faiiya-kyc-banner').style.background = '#f0fdf4';
-                            document.getElementById('faiiya-kyc-banner').style.borderColor = '#bbf7d0';
+                            // 1. Immediately transition UI from locked to unlocked state without reload
+                            const lockedCard = document.getElementById('faiiya-locked-kyc-card');
+                            if (lockedCard) lockedCard.style.display = 'none';
 
+                            const unlockedSec = document.getElementById('faiiya-unlocked-section');
+                            if (unlockedSec) unlockedSec.style.display = 'block';
+
+                            // 2. Hide top banner for clean unified card presentation
+                            const banner = document.getElementById('faiiya-kyc-banner');
+                            if (banner) banner.style.display = 'none';
+
+                            const vName = (resData.data && resData.data.verified_name) ? resData.data.verified_name : 'Verified Customer';
+                            const profNameEl = document.getElementById('faiiya-profile-fullname');
+                            if (profNameEl) profNameEl.innerText = vName;
+
+                            const cardKycStatus = document.getElementById('faiiya-card-kyc-status');
+                            if (cardKycStatus) cardKycStatus.innerText = 'Verified (Tier 1)';
+
+                            // 3. Render Virtual Accounts Grid with Prominent Account Name
                             const grid = document.getElementById('faiiya-va-grid');
-                            if (grid && resData.data && resData.data.virtual_accounts) {
+                            if (grid && resData.data && resData.data.virtual_accounts && resData.data.virtual_accounts.length > 0) {
                                 let html = '';
                                 resData.data.virtual_accounts.forEach(function(acc) {
-                                    html += '<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px;">' +
-                                        '<div style="font-size: 12px; font-weight: 600; color: #059669; margin-bottom: 4px;">' + acc.bank_name + '</div>' +
-                                        '<div style="font-size: 20px; font-weight: 700; color: #0f172a; font-family: monospace; margin-bottom: 4px;">' + acc.account_number + '</div>' +
-                                        '<div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">' + acc.account_name + '</div>' +
-                                        '<button type="button" onclick="navigator.clipboard.writeText(\'' + acc.account_number + '\'); alert(\'Copied!\');" style="background:#f1f5f9; border:1px solid #cbd5e1; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Copy</button>' +
+                                    const accName = acc.account_name || vName;
+                                    html += '<div style="background: #ffffff; border: 1.5px solid #cbd5e1; border-radius: 12px; padding: 18px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative;">' +
+                                        '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">' +
+                                        '<span style="font-size: 13px; font-weight: 700; color: #059669; text-transform: uppercase; letter-spacing: 0.05em;">' + acc.bank_name + '</span>' +
+                                        '<span style="background: #ecfdf5; color: #065f46; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; border: 1px solid #a7f3d0;">ACTIVE NUBAN</span>' +
+                                        '</div>' +
+                                        '<div style="font-size: 24px; font-weight: 800; color: #0f172a; font-family: monospace; letter-spacing: 0.06em; margin-bottom: 12px;">' + acc.account_number + '</div>' +
+                                        '<div style="background: #f1f5f9; border-left: 3px solid #0284c7; padding: 8px 12px; border-radius: 0 6px 6px 0; margin-bottom: 14px;">' +
+                                        '<div style="font-size: 10px; text-transform: uppercase; font-weight: 700; color: #64748b; letter-spacing: 0.04em;">Account Name (Destination):</div>' +
+                                        '<div style="font-size: 13px; font-weight: 800; color: #0f172a; word-break: break-word;">' + accName + '</div>' +
+                                        '</div>' +
+                                        '<button type="button" onclick="navigator.clipboard.writeText(\'' + acc.account_number + '\'); this.innerText=\'✓ Copied!\'; var b=this; setTimeout(function(){b.innerText=\'📋 Copy Number\';}, 2000);" style="width: 100%; background: #f8fafc; color: #334155; border: 1px solid #cbd5e1; padding: 8px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer;">📋 Copy Number</button>' +
                                         '</div>';
                                 });
                                 grid.innerHTML = html;
@@ -700,11 +808,22 @@ class Shortcodes {
                                     const modalName = document.getElementById('faiiya-step2-acc-name');
                                     if (modalAcc) modalAcc.innerText = firstAcc.account_number;
                                     if (modalBank) modalBank.innerText = firstAcc.bank_name;
-                                    if (modalName) modalName.innerText = firstAcc.account_name;
+                                    if (modalName) modalName.innerText = firstAcc.account_name || vName;
                                 }
                             }
 
-                            alert('KYC Verified! Official name synced: ' + (resData.data.verified_name || 'Verified Customer') + '. Dedicated virtual accounts unlocked.');
+                            // 4. Show clean inline success notification banner (no blocking alert)
+                            const prevToast = document.getElementById('faiiya-kyc-success-toast');
+                            if (prevToast) prevToast.remove();
+
+                            const successBanner = document.createElement('div');
+                            successBanner.id = 'faiiya-kyc-success-toast';
+                            successBanner.style.cssText = 'background: #ecfdf5; border: 1.5px solid #6ee7b7; color: #065f46; padding: 14px 18px; border-radius: 10px; margin-bottom: 18px; font-size: 14px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);';
+                            successBanner.innerHTML = '<span>✅ <strong>KYC Verified!</strong> Virtual accounts created for <strong>' + vName + '</strong>. Your wallet is unlocked and ready for deposits.</span><button type="button" onclick="this.parentElement.remove();" style="background:none; border:none; font-size:18px; cursor:pointer; color:#065f46;">&times;</button>';
+                            
+                            if (banner) {
+                                banner.insertAdjacentElement('afterend', successBanner);
+                            }
                         } else {
                             throw new Error(resData.message || 'KYC verification failed.');
                         }
@@ -735,7 +854,9 @@ class Shortcodes {
             const presetBtns = document.querySelectorAll('.faiiya-preset-btn');
 
             let pollInterval = null;
-            let fundStartTime = null;
+            let lastKnownTxnId = <?php echo (int) $latest_txn_id; ?>;
+            let fundStartTime = '<?php echo esc_js($server_now); ?>';
+            let targetFundAmount = 10000;
 
             function stopPolling() {
                 if (pollInterval) {
@@ -761,7 +882,12 @@ class Shortcodes {
                 openFundBtn.addEventListener('click', openModal);
             }
             if (closeBtn) closeBtn.addEventListener('click', closeModal);
-            if (successCloseBtn) successCloseBtn.addEventListener('click', closeModal);
+            if (successCloseBtn) {
+                successCloseBtn.addEventListener('click', function() {
+                    closeModal();
+                    window.location.reload();
+                });
+            }
 
             overlay?.addEventListener('click', function(e) {
                 if (e.target === overlay) closeModal();
@@ -799,18 +925,29 @@ class Shortcodes {
 
             // Step 1 -> Step 2
             if (proceedBtn) {
-                proceedBtn.addEventListener('click', function() {
+                proceedBtn.addEventListener('click', async function() {
                     const val = parseFloat(customAmountInput?.value || '0');
                     if (isNaN(val) || val <= 0) {
                         alert('Please enter a valid funding amount.');
                         return;
                     }
 
+                    targetFundAmount = val;
                     const formatted = '₦' + val.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                     const displayEl = document.getElementById('faiiya-step2-amount-display');
                     if (displayEl) displayEl.innerText = formatted;
 
-                    fundStartTime = new Date().toISOString();
+                    // Fetch freshest max txn id from server to guarantee no older transactions match
+                    try {
+                        const txRes = await fetch('<?php echo esc_url(rest_url("faiiya/v1/wallet/transactions")); ?>?per_page=1', {
+                            headers: { 'X-WP-Nonce': '<?php echo $nonce; ?>', 'Accept': 'application/json' }
+                        });
+                        const txJson = await txRes.json();
+                        if (txJson && txJson.data && txJson.data.transactions && txJson.data.transactions[0]) {
+                            lastKnownTxnId = Math.max(lastKnownTxnId, parseInt(txJson.data.transactions[0].id, 10) || 0);
+                        }
+                    } catch (e) {}
+
                     step1.style.display = 'none';
                     step2.style.display = 'block';
 
@@ -828,7 +965,7 @@ class Shortcodes {
 
             async function checkDepositStatus() {
                 try {
-                    const checkUrl = '<?php echo esc_url(rest_url("faiiya/v1/wallet/check-deposit")); ?>?since=' + encodeURIComponent(fundStartTime || '');
+                    const checkUrl = '<?php echo esc_url(rest_url("faiiya/v1/wallet/check-deposit")); ?>?since_id=' + encodeURIComponent(lastKnownTxnId) + '&expected_amount=' + encodeURIComponent(targetFundAmount);
                     const res = await fetch(checkUrl, {
                         headers: {
                             'X-WP-Nonce': '<?php echo $nonce; ?>',
@@ -837,8 +974,11 @@ class Shortcodes {
                     });
                     const data = await res.json();
 
-                    if (data && data.data && data.data.funded) {
+                    if (data && data.data && data.data.funded === true) {
                         stopPolling();
+                        if (data.data.txn_id) {
+                            lastKnownTxnId = Math.max(lastKnownTxnId, parseInt(data.data.txn_id, 10));
+                        }
                         const creditedAmount = '₦' + parseFloat(data.data.amount).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                         const newBal = '₦' + parseFloat(data.data.balance_after).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -852,9 +992,12 @@ class Shortcodes {
 
                         step2.style.display = 'none';
                         step3.style.display = 'block';
+                        return data.data;
                     }
+                    return data ? data.data : null;
                 } catch (err) {
                     console.error('Error polling Monnify deposit status:', err);
+                    return null;
                 }
             }
 
@@ -865,13 +1008,60 @@ class Shortcodes {
 
             if (checkNowBtn) {
                 checkNowBtn.addEventListener('click', async function() {
+                    const statusMsg = document.getElementById('faiiya-check-status-msg');
                     this.disabled = true;
-                    this.innerText = 'Checking...';
-                    await checkDepositStatus();
+                    this.innerText = 'Checking payment...';
+                    if (statusMsg) {
+                        statusMsg.style.display = 'block';
+                        statusMsg.innerText = 'Connecting to Monnify gateway...';
+                    }
+                    const res = await checkDepositStatus();
                     this.disabled = false;
                     this.innerText = '🔄 Check Status Now';
+                    if (statusMsg && (!res || !res.funded)) {
+                        statusMsg.innerText = 'No bank transfer detected yet. Still listening...';
+                        setTimeout(() => { if (statusMsg) statusMsg.style.display = 'none'; }, 4000);
+                    }
                 });
             }
+
+            // Dynamic Background Wallet Balance Synchronizer
+            // Polls /wallet/balance to guarantee instant reflection of manual admin adjustments or deposits
+            let lastKnownBalance = parseFloat('<?php echo (float) $wallet->balance; ?>') || 0;
+            async function syncWalletBalanceDynamically() {
+                try {
+                    const balUrl = '<?php echo esc_url(rest_url("faiiya/v1/wallet/balance")); ?>';
+                    const res = await fetch(balUrl, {
+                        headers: {
+                            'X-WP-Nonce': '<?php echo $nonce; ?>',
+                            'Accept': 'application/json'
+                        }
+                    });
+                    if (!res.ok) return;
+                    const json = await res.json();
+                    if (json && json.status === 'success' && json.data) {
+                        const newBal = parseFloat(json.data.balance || 0);
+                        const liveBalEl = document.getElementById('faiiya-live-balance');
+                        if (liveBalEl) {
+                            liveBalEl.innerText = newBal.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        }
+                        if (Math.abs(newBal - lastKnownBalance) > 0.001) {
+                            lastKnownBalance = newBal;
+                            if (liveBalEl && liveBalEl.parentElement) {
+                                liveBalEl.parentElement.style.transition = 'transform 0.25s ease';
+                                liveBalEl.parentElement.style.transform = 'scale(1.04)';
+                                setTimeout(() => { liveBalEl.parentElement.style.transform = 'scale(1)'; }, 350);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    // Fail silently in background
+                }
+            }
+
+            // Initial immediate sync + recurring every 5 seconds
+            setTimeout(syncWalletBalanceDynamically, 1000);
+            setInterval(syncWalletBalanceDynamically, 5000);
         })();
         </script>
         <?php

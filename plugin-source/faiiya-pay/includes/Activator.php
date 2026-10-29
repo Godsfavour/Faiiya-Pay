@@ -10,10 +10,40 @@ class Activator {
         self::create_tables();
         self::set_default_options();
         self::create_default_pages();
+        self::fix_woocommerce_checkout();
+        update_option('faiiya_pay_db_version', FAIIYA_PAY_VERSION);
         flush_rewrite_rules();
     }
 
-    private static function create_tables(): void {
+    public static function fix_woocommerce_checkout(): void {
+        if (get_option('woocommerce_faiiya_pay_wallet_settings') === false) {
+            update_option('woocommerce_faiiya_pay_wallet_settings', [
+                'enabled'     => 'yes',
+                'title'       => 'Faiiya Pay Digital Wallet',
+                'description' => 'Pay instantly using your available digital wallet balance.',
+            ]);
+        }
+        if (get_option('woocommerce_faiiya_pay_monnify_settings') === false) {
+            update_option('woocommerce_faiiya_pay_monnify_settings', [
+                'enabled'     => 'yes',
+                'title'       => 'Debit Card / Bank Transfer / USSD (Monnify)',
+                'description' => 'Pay securely with your ATM Card (Mastercard, Visa, Verve), Direct Bank Transfer, or USSD via Monnify.',
+            ]);
+        }
+
+        $checkout_page_id = (int) get_option('woocommerce_checkout_page_id', 0);
+        if ($checkout_page_id > 0) {
+            $checkout_post = get_post($checkout_page_id);
+            if ($checkout_post && (has_block('woocommerce/checkout', $checkout_post->post_content) || strpos($checkout_post->post_content, 'wp:woocommerce/checkout') !== false)) {
+                wp_update_post([
+                    'ID'           => $checkout_page_id,
+                    'post_content' => '<!-- wp:shortcode -->[woocommerce_checkout]<!-- /wp:shortcode -->',
+                ]);
+            }
+        }
+    }
+
+    public static function create_tables(): void {
         global $wpdb;
 
         $charset_collate = $wpdb->get_charset_collate();
@@ -120,6 +150,15 @@ class Activator {
         dbDelta($sql_virtual_accounts);
         dbDelta($sql_referrals);
         dbDelta($sql_webhook_logs);
+
+        // De-duplicate wp_faiiya_wallets so each user has strictly ONE row
+        $wpdb->query("DELETE w1 FROM {$table_wallets} w1 INNER JOIN {$table_wallets} w2 WHERE w1.user_id = w2.user_id AND w1.id < w2.id");
+
+        // Guarantee UNIQUE KEY on user_id directly via ALTER TABLE
+        $has_uk = $wpdb->get_var("SHOW INDEX FROM {$table_wallets} WHERE Key_name = 'uk_user_id'");
+        if (!$has_uk) {
+            $wpdb->query("ALTER TABLE {$table_wallets} ADD UNIQUE KEY uk_user_id (user_id)");
+        }
 
         update_option('faiiya_pay_db_version', FAIIYA_PAY_VERSION);
     }

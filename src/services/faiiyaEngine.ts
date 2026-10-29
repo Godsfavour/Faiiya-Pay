@@ -127,6 +127,7 @@ function getDefaultState(): EngineState {
       monnifyApiKey: 'MK_PROD_9981240182_FAIIYA',
       monnifySecretKey: 'SK_PROD_9823471029_FAIIYA_SEC',
       monnifyContractCode: '8291048291',
+      monnifyWalletAccountNumber: '1042026202',
       adminSecurityPin: '889922',
       feeBearer: 'merchant',
       depositFeeType: 'percentage',
@@ -161,7 +162,7 @@ export class FaiiyaEngine {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        return {
+        const loadedState: EngineState = {
           ...getDefaultState(),
           ...parsed,
           settings: {
@@ -170,6 +171,23 @@ export class FaiiyaEngine {
             monnifyMode: 'live', // Enforce permanent live production mode
           },
         };
+
+        // Self-heal verification status: Any customer with virtual accounts or verified wallet is verified
+        if (loadedState.virtualAccounts && loadedState.virtualAccounts.length > 0) {
+          const verifiedUserIds = new Set(loadedState.virtualAccounts.map((va) => va.userId));
+          loadedState.users.forEach((u) => {
+            if (verifiedUserIds.has(u.id)) {
+              u.kycStatus = 'verified';
+            }
+          });
+          loadedState.wallets.forEach((w) => {
+            if (verifiedUserIds.has(w.userId)) {
+              w.kycStatus = 'verified';
+            }
+          });
+        }
+
+        return loadedState;
       }
     } catch {
       // fallback to clean production defaults
@@ -255,6 +273,10 @@ export class FaiiyaEngine {
 
   public getWallet(userId: number): Wallet {
     let wallet = this.state.wallets.find((w) => w.userId === userId);
+    const virtualAccounts = this.getVirtualAccounts(userId);
+    const user = this.getUserById(userId);
+    const isVerified = (user?.kycStatus === 'verified' || virtualAccounts.length > 0);
+
     if (!wallet) {
       const now = new Date().toISOString();
       const newWallet: Wallet = {
@@ -263,7 +285,7 @@ export class FaiiyaEngine {
         balance: 0.0,
         currency: 'NGN',
         status: 'active',
-        kycStatus: 'unverified',
+        kycStatus: isVerified ? 'verified' : 'unverified',
         createdAt: now,
         updatedAt: now,
       };
@@ -271,6 +293,14 @@ export class FaiiyaEngine {
       this.saveState();
       return newWallet;
     }
+
+    // Auto-sync if virtual accounts or user is already verified
+    if (isVerified && wallet.kycStatus !== 'verified') {
+      wallet.kycStatus = 'verified';
+      if (user && user.kycStatus !== 'verified') user.kycStatus = 'verified';
+      this.saveState();
+    }
+
     return wallet;
   }
 
@@ -1457,6 +1487,49 @@ export class FaiiyaEngine {
       orderNumber,
       items,
     });
+  }
+
+  public processMonnifyCheckout(
+    userId: number,
+    items: { productId: number; productName: string; price: number; quantity: number }[]
+  ): StoreOrder {
+    const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const shipping = items.length > 0 ? 3500 : 0;
+    const total = subtotal + shipping;
+    const orderNumber = `WC-ORDER-${Math.floor(10000 + Math.random() * 90000)}`;
+    const txnUuid = generateUuid();
+    const user = this.getUserById(userId);
+
+    const order: StoreOrder = {
+      id: this.state.orders.length + 1,
+      orderNumber,
+      userId,
+      items,
+      total,
+      paymentMethod: 'Debit Card / Bank Transfer / USSD (Monnify)',
+      status: 'completed',
+      txnUuid,
+      notes: [
+        `Direct online checkout processed via Monnify Payment Gateway (WC_Gateway_Monnify)`,
+        `Payment Reference: ${orderNumber}, Monnify Txn: MNFY_${Date.now()}`,
+      ],
+      createdAt: new Date().toISOString(),
+    };
+    this.state.orders.unshift(order);
+
+    if (user) {
+      this.dispatchNotification({
+        userId: user.id,
+        channel: 'email',
+        recipient: user.email,
+        eventType: 'order_debited',
+        subject: `Order ${orderNumber} Confirmed - Paid via Monnify`,
+        body: `Dear ${user.firstName}, your payment of ₦${total.toLocaleString()} for order ${orderNumber} via Monnify (ATM Card/Transfer/USSD) was successful.`,
+      });
+    }
+
+    this.saveState();
+    return order;
   }
 
   // --- QUERY TRANSACTIONS & LOGS ---

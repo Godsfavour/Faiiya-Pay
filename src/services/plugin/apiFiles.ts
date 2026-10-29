@@ -240,7 +240,9 @@ class WalletController extends RestControllerBase {
             'callback'            => [$this, 'check_deposit'],
             'permission_callback' => [$this, 'check_user_permission'],
             'args'                => [
-                'since' => ['required' => false, 'type' => 'string'],
+                'since'           => ['required' => false, 'type' => 'string'],
+                'since_id'        => ['required' => false, 'type' => 'integer'],
+                'expected_amount' => ['required' => false, 'type' => 'number'],
             ],
         ]);
     }
@@ -252,17 +254,29 @@ class WalletController extends RestControllerBase {
         $wallet = $wallet_model->ensure_wallet_exists($user_id);
 
         $table_txns = $wpdb->prefix . 'faiiya_transactions';
-        $since = sanitize_text_field((string) ($request->get_param('since') ?? ''));
+        $since_id = (int) ($request->get_param('since_id') ?? 0);
+        $since_time = sanitize_text_field((string) ($request->get_param('since') ?? ''));
 
-        $sql = "SELECT * FROM {$table_txns} WHERE user_id = %d AND type = 'deposit' AND status = 'completed'";
-        $params = [$user_id];
-        if (!empty($since)) {
-            $sql .= " AND created_at >= %s";
-            $params[] = $since;
+        // 1. Check local database strictly for a completed deposit that was created AFTER the modal was opened
+        $latest = null;
+        if ($since_id > 0) {
+            $latest = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$table_txns} 
+                 WHERE user_id = %d AND type = 'deposit' AND status = 'completed' AND id > %d 
+                 ORDER BY id DESC LIMIT 1",
+                $user_id,
+                $since_id
+            ));
+        } elseif (!empty($since_time)) {
+            // Strictly check created_at greater than the modal open timestamp (NEVER fallback to past deposits)
+            $latest = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$table_txns} 
+                 WHERE user_id = %d AND type = 'deposit' AND status = 'completed' AND created_at > %s 
+                 ORDER BY id DESC LIMIT 1",
+                $user_id,
+                $since_time
+            ));
         }
-        $sql .= " ORDER BY id DESC LIMIT 1";
-
-        $latest = $wpdb->get_row($wpdb->prepare($sql, ...$params));
 
         if ($latest) {
             return $this->success([
@@ -271,12 +285,32 @@ class WalletController extends RestControllerBase {
                 'reference'     => $latest->reference,
                 'balance_after' => (float) $latest->balance_after,
                 'created_at'    => $latest->created_at,
+                'txn_id'        => (int) $latest->id,
             ]);
+        }
+
+        // 2. Active Direct Sync with Monnify API:
+        // In case the webhook was delayed or blocked by host bot-protection/security,
+        // synchronize directly with Monnify API reserved accounts right now.
+        $monnify_service = new MonnifyService();
+        if ($monnify_service->is_configured()) {
+            $sync_res = $monnify_service->sync_customer_reserved_transactions($user_id);
+            if (!empty($sync_res['credited']) && is_array($sync_res['credited'])) {
+                $latest_credited = end($sync_res['credited']);
+                return $this->success([
+                    'funded'        => true,
+                    'amount'        => (float) $latest_credited['amount'],
+                    'reference'     => $latest_credited['reference'],
+                    'balance_after' => (float) $latest_credited['balance_after'],
+                    'created_at'    => current_time('mysql'),
+                    'txn_id'        => (int) ($latest_credited['txn_id'] ?? 0),
+                ]);
+            }
         }
 
         return $this->success([
             'funded'  => false,
-            'balance' => (float) $wallet->balance,
+            'balance' => $wallet_model->get_balance($user_id),
         ]);
     }
 
@@ -284,20 +318,20 @@ class WalletController extends RestControllerBase {
         $user_id = get_current_user_id();
 
         $wallet_model = new WalletModel();
-        $wallet = $wallet_model->ensure_wallet_exists($user_id);
+        $wallet = $wallet_model->get_wallet($user_id) ?: $wallet_model->ensure_wallet_exists($user_id);
 
         $va_model = new VirtualAccountModel();
         $virtual_accounts = $va_model->get_user_accounts($user_id);
 
         return $this->success([
-            'wallet_id'        => (int) $wallet->id,
+            'wallet_id'        => (int) ($wallet->id ?? 0),
             'user_id'          => $user_id,
-            'balance'          => (float) $wallet->balance,
-            'currency'         => $wallet->currency,
-            'status'           => $wallet->status,
+            'balance'          => $wallet_model->get_balance($user_id),
+            'currency'         => $wallet->currency ?? 'NGN',
+            'status'           => $wallet->status ?? 'active',
             'kyc_status'       => $wallet->kyc_status ?? 'unverified',
             'virtual_accounts' => $virtual_accounts,
-            'last_updated'     => $wallet->updated_at,
+            'last_updated'     => $wallet->updated_at ?? current_time('mysql'),
         ]);
     }
 
@@ -346,28 +380,57 @@ class WalletController extends RestControllerBase {
                 'nin'            => !empty($nin) ? $clean_id : '',
             ]);
 
-            // 2. Name Compliance Replacement: Replace WordPress first_name, other_names, and last_name with verified identity
-            $verified_account_name = $monnify_resp['accountName'] ?? $monnify_resp['customerName'] ?? '';
-            $synced_name = '';
+            // 2. Name Compliance Replacement: Keep complete registered name or verified customer full name. NEVER truncate to 3 letters!
+            $raw_account_name = (string) ($monnify_resp['accountName'] ?? '');
+            $raw_customer_name = (string) ($monnify_resp['customerName'] ?? '');
 
-            if (!empty($verified_account_name)) {
-                $clean_name = trim((string) preg_replace('/^FAIIYA\\s*\\/\\s*/i', '', $verified_account_name));
-                $name_parts = preg_split('/\\s+/', $clean_name);
-                $verified_first = sanitize_text_field($name_parts[0] ?? $user->first_name);
-                $verified_last  = sanitize_text_field(count($name_parts) > 1 ? end($name_parts) : $user->last_name);
-                $verified_other = count($name_parts) > 2 ? sanitize_text_field(implode(' ', array_slice($name_parts, 1, -1))) : '';
+            // Clean any corporate prefixes like "FAIIYA / " or "FAIIYA - "
+            $cleaned_account_name = trim((string) preg_replace('/^FAIIYA\s*[\/\-]\s*/i', '', $raw_account_name));
 
-                wp_update_user([
-                    'ID'           => $user_id,
-                    'first_name'   => $verified_first,
-                    'last_name'    => $verified_last,
-                    'display_name' => trim("{$verified_first} {$verified_other} {$verified_last}"),
-                ]);
-                if (!empty($verified_other)) {
-                    update_user_meta($user_id, 'other_names', $verified_other);
+            $existing_first = (string) $user->first_name;
+            $existing_last  = (string) $user->last_name;
+            $official_first = $existing_first;
+            $official_last  = $existing_last;
+            $official_other = (string) get_user_meta($user_id, 'other_names', true);
+
+            // If customerName from Monnify contains full words, use it
+            if (!empty($raw_customer_name)) {
+                $c_parts = preg_split('/\\s+/', trim($raw_customer_name));
+                if (count($c_parts) >= 2) {
+                    $official_first = sanitize_text_field($c_parts[0]);
+                    $official_last  = sanitize_text_field(end($c_parts));
+                    if (count($c_parts) > 2) {
+                        $official_other = sanitize_text_field(implode(' ', array_slice($c_parts, 1, -1)));
+                    }
+                } elseif (count($c_parts) === 1 && strlen($c_parts[0]) > 3) {
+                    $official_first = sanitize_text_field($c_parts[0]);
                 }
-                $synced_name = trim("{$verified_first} {$verified_other} {$verified_last}");
+            } elseif (!empty($cleaned_account_name)) {
+                // Only parse cleaned_account_name if it is NOT a 3-letter abbreviation
+                $a_parts = preg_split('/\\s+/', $cleaned_account_name);
+                if (count($a_parts) >= 2) {
+                    $official_first = sanitize_text_field($a_parts[0]);
+                    $official_last  = sanitize_text_field(end($a_parts));
+                } elseif (count($a_parts) === 1 && strlen($a_parts[0]) > 3 && empty($existing_first)) {
+                    $official_first = sanitize_text_field($a_parts[0]);
+                }
             }
+
+            if (empty($official_first)) {
+                $official_first = $user->display_name ?: 'Customer';
+            }
+
+            wp_update_user([
+                'ID'           => $user_id,
+                'first_name'   => $official_first,
+                'last_name'    => $official_last,
+                'display_name' => trim("{$official_first} {$official_other} {$official_last}"),
+            ]);
+            if (!empty($official_other)) {
+                update_user_meta($user_id, 'other_names', $official_other);
+            }
+            update_user_meta($user_id, 'faiiya_kyc_status', 'verified');
+            $synced_name = trim("{$official_first} {$official_other} {$official_last}");
 
             // 3. Save virtual accounts
             $va_model = new VirtualAccountModel();
@@ -572,33 +635,80 @@ class WebhookController extends RestControllerBase {
             ?: $request->get_header('x-monnify-signature')
             ?: ($_SERVER['HTTP_MONNIFY_SIGNATURE'] ?? '');
 
-        $monnify_service = new MonnifyService();
-
-        if (!$monnify_service->verify_webhook_signature($raw_body, $signature_header)) {
-            $bypass = apply_filters('faiiya_bypass_webhook_signature_for_test', false, $request);
-            if (!$bypass) {
-                $this->log_webhook_attempt('monnify', 'UNKNOWN', 'INVALID_SIGNATURE', $raw_body, 'failed');
-                return new \\WP_REST_Response(['status' => 'error', 'message' => 'Invalid webhook signature.'], 403);
-            }
-        }
-
         $payload = json_decode($raw_body, true);
         if (!is_array($payload)) {
+            $this->log_webhook_attempt('monnify', 'UNKNOWN', 'INVALID_JSON', $raw_body, 'failed: invalid_json');
             return new \\WP_REST_Response(['status' => 'error', 'message' => 'Invalid JSON body.'], 400);
         }
 
-        $event_type = $payload['eventType'] ?? 'SUCCESSFUL_TRANSACTION';
+        $event_type = strtoupper((string) ($payload['eventType'] ?? 'SUCCESSFUL_TRANSACTION'));
         $event_data = $payload['eventData'] ?? $payload;
+        $transaction_ref = (string) ($event_data['transactionReference'] ?? $event_data['paymentReference'] ?? '');
 
-        $transaction_ref = $event_data['transactionReference'] ?? $event_data['paymentReference'] ?? '';
+        $monnify_service = new MonnifyService();
+
+        // 3-Tier Robust Verification:
+        // Tier 1: Header HMAC-SHA512
+        // Tier 2: Body transactionHash (Official formula: SHA-512 of secret|paymentRef|amount|paidOn|txnRef)
+        // Tier 3: Query Monnify API directly if signature header was stripped by server proxy (Apache/Cloudflare/LiteSpeed)
+        $is_verified = $monnify_service->verify_webhook_signature($raw_body, $signature_header, $event_data);
+
+        if (!$is_verified && !empty($transaction_ref) && $monnify_service->is_configured()) {
+            $query_check = $monnify_service->query_transaction($transaction_ref);
+            if ($query_check && in_array(strtoupper((string) ($query_check['paymentStatus'] ?? '')), ['PAID', 'SUCCESSFUL', 'COMPLETED'], true)) {
+                $is_verified = true;
+            }
+        }
+
+        // Allow explicit test bypass filter
+        if (!$is_verified) {
+            $is_verified = apply_filters('faiiya_bypass_webhook_signature_for_test', false, $request);
+        }
+
+        if (!$is_verified) {
+            $this->log_webhook_attempt('monnify', $event_type, $transaction_ref ?: 'INVALID_SIG', $raw_body, 'failed: invalid_signature');
+            return new \\WP_REST_Response(['status' => 'error', 'message' => 'Invalid webhook signature.'], 403);
+        }
+
+        // Webhook Triage: Filter out unneeded webhooks with clean 200 OK
+        $supported_events = [
+            'SUCCESSFUL_TRANSACTION',
+            'SUCCESSFUL_DISBURSEMENT',
+            'FAILED_DISBURSEMENT',
+            'WALLET_ACTIVITY'
+        ];
+
+        if (!in_array($event_type, $supported_events, true)) {
+            // Acknowledge non-wallet webhooks (Refund, Settlement, Mandate, Bill Payment) cleanly
+            $this->log_webhook_attempt('monnify', $event_type, $transaction_ref ?: 'IGNORED', $raw_body, 'ignored');
+            return new \\WP_REST_Response([
+                'status'  => 'ignored',
+                'message' => 'Event type ' . esc_html($event_type) . ' safely acknowledged (not required for wallet).',
+            ], 200);
+        }
+
+        // Handle Monnify Wallet Statement & Activity Notifications
+        if ($event_type === 'WALLET_ACTIVITY') {
+            $this->log_webhook_attempt('monnify', $event_type, $event_data['reference'] ?? 'WALLET_PING', $raw_body, 'processed');
+            return new \\WP_REST_Response(['status' => 'success', 'message' => 'Wallet activity logged.'], 200);
+        }
+
+        // Handle Outbound Disbursement Status Webhooks
+        if ($event_type === 'SUCCESSFUL_DISBURSEMENT' || $event_type === 'FAILED_DISBURSEMENT') {
+            $disburse_ref = $event_data['reference'] ?? $event_data['batchReference'] ?? '';
+            $this->log_webhook_attempt('monnify', $event_type, $disburse_ref, $raw_body, 'processed');
+            return new \\WP_REST_Response(['status' => 'success', 'message' => 'Disbursement webhook received.'], 200);
+        }
+
         if (empty($transaction_ref)) {
+            $this->log_webhook_attempt('monnify', $event_type, 'NO_REF', $raw_body, 'failed: missing_reference');
             return new \\WP_REST_Response(['status' => 'error', 'message' => 'Missing transaction reference.'], 400);
         }
 
         // Module C Idempotency Check: Pre-reserve in webhook logs with UNIQUE constraint protection
         $table_logs = $wpdb->prefix . 'faiiya_webhook_logs';
         $existing_log = $wpdb->get_var(
-            $wpdb->prepare("SELECT id FROM {$table_logs} WHERE transaction_reference = %s LIMIT 1", $transaction_ref)
+            $wpdb->prepare("SELECT id FROM {$table_logs} WHERE transaction_reference = %s AND processed_status = 'processed' LIMIT 1", $transaction_ref)
         );
 
         $txn_model = new TransactionModel();
@@ -609,44 +719,57 @@ class WebhookController extends RestControllerBase {
             ], 200);
         }
 
-        $inserted_log = $wpdb->insert(
-            $table_logs,
-            [
-                'gateway'               => 'monnify',
-                'event_type'            => $event_type,
-                'transaction_reference' => $transaction_ref,
-                'request_hash'          => hash('sha256', $raw_body),
-                'payload'               => $raw_body,
-                'processed_status'      => 'received',
-                'created_at'            => current_time('mysql'),
-            ],
-            ['%s', '%s', '%s', '%s', '%s', '%s', '%s']
-        );
-
-        if (!$inserted_log) {
-            // Database unique constraint violation caught: abort and return 200 OK immediately
-            return new \\WP_REST_Response([
-                'status'  => 'success',
-                'message' => 'Webhook already processed (Idempotent OK).',
-            ], 200);
-        }
-
-        $payment_status = strtoupper($event_data['paymentStatus'] ?? '');
+        $payment_status = strtoupper((string) ($event_data['paymentStatus'] ?? ''));
         if ($payment_status !== 'PAID' && $payment_status !== 'COMPLETED' && $payment_status !== 'SUCCESSFUL') {
-            $this->log_webhook_attempt('monnify', $event_type, $transaction_ref, $raw_body, 'processed');
+            $this->log_webhook_attempt('monnify', $event_type, $transaction_ref, $raw_body, 'ignored: not_paid');
             return new \\WP_REST_Response(['status' => 'ignored', 'message' => 'Transaction not paid.'], 200);
         }
 
         $amount_paid = (float) ($event_data['amountPaid'] ?? $event_data['amount'] ?? 0.00);
         if ($amount_paid <= 0) {
+            $this->log_webhook_attempt('monnify', $event_type, $transaction_ref, $raw_body, 'failed: invalid_amount');
             return new \\WP_REST_Response(['status' => 'error', 'message' => 'Invalid amount.'], 400);
         }
 
-        $va_model = new VirtualAccountModel();
-        $account_ref = $event_data['product']['reference'] ?? $event_data['accountReference'] ?? '';
-        $account_num = $event_data['destinationAccountInformation']['accountNumber'] ?? '';
-        $customer_email = $event_data['customer']['email'] ?? '';
+        $payment_ref = (string) ($event_data['paymentReference'] ?? '');
 
+        // 1. Direct WooCommerce Order Checkout Payment Webhook
+        if (!empty($payment_ref) && (str_starts_with($payment_ref, 'WC-') || str_starts_with($payment_ref, 'WC_'))) {
+            $order_id = 0;
+            if (preg_match('/^WC(?:[-_]ORDER)?[-_](\\d+)/i', $payment_ref, $matches)) {
+                $order_id = (int) $matches[1];
+            }
+            if ($order_id > 0 && function_exists('wc_get_order')) {
+                $order = wc_get_order($order_id);
+                if ($order) {
+                    if (!$order->is_paid()) {
+                        $order->payment_complete($transaction_ref);
+                        $order->add_order_note(
+                            sprintf(
+                                __('Monnify direct payment confirmed via webhook. Amount: ₦%s. Txn Ref: %s. Payment Ref: %s', 'faiiya-pay'),
+                                number_format($amount_paid, 2),
+                                $transaction_ref,
+                                $payment_ref
+                            )
+                        );
+                    }
+                    $this->log_webhook_attempt('monnify', $event_type, $transaction_ref, $raw_body, 'processed');
+                    return new \\WP_REST_Response([
+                        'status'  => 'success',
+                        'message' => 'WooCommerce Order #' . $order_id . ' payment marked complete.',
+                    ], 200);
+                }
+            }
+        }
+
+        $va_model = new VirtualAccountModel();
+        $account_ref = (string) ($event_data['product']['reference'] ?? $event_data['accountReference'] ?? '');
+        $dest_acc_info = $event_data['destinationAccountInformation'] ?? [];
+        $raw_account_num = (string) ($dest_acc_info['accountNumber'] ?? ($event_data['accountNumber'] ?? ''));
+        $account_num = preg_replace('/\\D/', '', $raw_account_num);
+        $customer_email = sanitize_email(strtolower((string) ($event_data['customer']['email'] ?? '')));
+
+        // Robust customer lookup: 1) Account number, 2) Account reference, 3) Customer email
         $user_id = $va_model->find_user_by_account($account_ref, $account_num);
         if (!$user_id && !empty($customer_email)) {
             $user = get_user_by('email', $customer_email);
@@ -656,15 +779,31 @@ class WebhookController extends RestControllerBase {
         }
 
         if (!$user_id) {
-            $this->log_webhook_attempt('monnify', $event_type, $transaction_ref, $raw_body, 'failed');
+            $this->log_webhook_attempt('monnify', $event_type, $transaction_ref, $raw_body, 'failed: no_matching_customer_account');
             return new \\WP_REST_Response([
                 'status'  => 'error',
-                'message' => 'No matching customer wallet found for account reference/email.',
+                'message' => 'No matching customer wallet found for account reference/number: ' . esc_html($account_num) . ' / email: ' . esc_html($customer_email),
             ], 404);
         }
 
         $is_first_deposit = !$txn_model->has_completed_deposit($user_id);
         $wallet_model = new WalletModel();
+
+        // Rich Monnify metadata mapping from Monnify documentation
+        $payer_info = $event_data['payerDetails'] ?? [];
+        $meta_details = [
+            'source'              => 'monnify_webhook',
+            'event_type'          => $event_type,
+            'destination_account' => $account_num,
+            'destination_bank'    => $dest_acc_info['bankName'] ?? '',
+            'bank_code'           => $dest_acc_info['bankCode'] ?? '',
+            'payer_name'          => $payer_info['payerName'] ?? ($event_data['customer']['name'] ?? ''),
+            'payer_account'       => $payer_info['payerAccountNumber'] ?? '',
+            'payer_bank'          => $payer_info['payerBankCode'] ?? '',
+            'channel'             => $event_data['paymentMethod'] ?? 'ACCOUNT_TRANSFER',
+            'paid_on'             => $event_data['paidOn'] ?? current_time('mysql'),
+            'settlement_amount'   => (float) ($event_data['settlementAmount'] ?? $amount_paid),
+        ];
 
         try {
             $result = $wallet_model->credit(
@@ -672,14 +811,7 @@ class WebhookController extends RestControllerBase {
                 $amount_paid,
                 'deposit',
                 $transaction_ref,
-                [
-                    'source'           => 'monnify_webhook',
-                    'event_type'       => $event_type,
-                    'account_number'   => $account_num,
-                    'bank_code'        => $event_data['destinationAccountInformation']['bankCode'] ?? '',
-                    'payment_method'   => $event_data['paymentMethod'] ?? 'ACCOUNT_TRANSFER',
-                    'paid_on'          => $event_data['paidOn'] ?? current_time('mysql'),
-                ]
+                $meta_details
             );
 
             $this->log_webhook_attempt('monnify', $event_type, $transaction_ref, $raw_body, 'processed');

@@ -13,10 +13,10 @@ export interface ZipPackageMetadata {
 export const COMPILED_ZIP_METADATA: ZipPackageMetadata = {
   "fileName": "faiiya-pay.zip",
   "filePath": "/faiiya-pay.zip",
-  "fileSizeBytes": 49186,
-  "fileSizeFormatted": "48.0 KB",
-  "totalFiles": 22,
-  "sha256": "38c71eb0e43b1da8b0e5b14aa77e9e890eacddebb1a8d404fe552c8e9509312d",
-  "md5": "0cf1d6d4e6cf46abc9a6a5dd41273068",
-  "compiledAt": "2026-10-27T11:35:20.441Z"
+  "fileSizeBytes": 73746,
+  "fileSizeFormatted": "72.0 KB",
+  "totalFiles": 26,
+  "sha256": "e06bd657d5207b307dd72473398c2e71882c071176f8b6ad811278f31d822956",
+  "md5": "5aca7a8b1b2d6ccc7c224bc365014bfa",
+  "compiledAt": "2026-10-29T13:09:27.503Z"
 };

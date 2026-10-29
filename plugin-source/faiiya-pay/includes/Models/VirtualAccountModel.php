@@ -17,18 +17,22 @@ class VirtualAccountModel {
         global $wpdb;
 
         $account_reference = $monnify_response['accountReference'] ?? ('FP_VA_' . $user_id);
-        $account_name = $monnify_response['accountName'] ?? '';
+        $global_account_name = $monnify_response['accountName'] ?? $monnify_response['customerName'] ?? '';
         $raw_response = wp_json_encode($monnify_response);
         $accounts = $monnify_response['accounts'] ?? [];
-
-        $user = get_userdata($user_id);
-        $display_acc_name = ($user && !empty($user->first_name)) ? $user->first_name : $account_name;
 
         if (!empty($accounts) && is_array($accounts)) {
             $wpdb->delete($this->table_name, ['user_id' => $user_id], ['%d']);
 
             $now = current_time('mysql');
             foreach ($accounts as $acc) {
+                // Retain exact complete account name as given by the Monnify API
+                $exact_name = !empty($acc['accountName']) ? $acc['accountName'] : $global_account_name;
+                if (empty($exact_name)) {
+                    $user = get_userdata($user_id);
+                    $exact_name = $user ? trim("{$user->first_name} {$user->last_name}") : 'Customer';
+                }
+
                 $wpdb->insert(
                     $this->table_name,
                     [
@@ -37,7 +41,7 @@ class VirtualAccountModel {
                         'bank_name'          => sanitize_text_field($acc['bankName'] ?? 'Bank'),
                         'bank_code'          => sanitize_text_field($acc['bankCode'] ?? ''),
                         'account_number'     => sanitize_text_field($acc['accountNumber'] ?? ''),
-                        'account_name'       => sanitize_text_field($display_acc_name),
+                        'account_name'       => sanitize_text_field($exact_name),
                         'reservation_status' => 'active',
                         'raw_response'       => $raw_response,
                         'created_at'         => $now,
@@ -78,18 +82,28 @@ class VirtualAccountModel {
         global $wpdb;
 
         if (!empty($account_number)) {
+            $clean_acc = preg_replace('/\D/', '', (string) $account_number);
             $user_id = $wpdb->get_var(
-                $wpdb->prepare("SELECT user_id FROM {$this->table_name} WHERE account_number = %s LIMIT 1", $account_number)
+                $wpdb->prepare(
+                    "SELECT user_id FROM {$this->table_name} WHERE TRIM(account_number) = %s OR TRIM(account_number) = %s LIMIT 1",
+                    $account_number,
+                    $clean_acc
+                )
             );
             if ($user_id) {
                 return (int) $user_id;
             }
         }
 
-        $user_id = $wpdb->get_var(
-            $wpdb->prepare("SELECT user_id FROM {$this->table_name} WHERE account_reference = %s LIMIT 1", $account_reference)
-        );
+        if (!empty($account_reference)) {
+            $user_id = $wpdb->get_var(
+                $wpdb->prepare("SELECT user_id FROM {$this->table_name} WHERE TRIM(account_reference) = %s LIMIT 1", trim($account_reference))
+            );
+            if ($user_id) {
+                return (int) $user_id;
+            }
+        }
 
-        return $user_id ? (int) $user_id : null;
+        return null;
     }
 }

@@ -47,7 +47,9 @@ class WalletController extends RestControllerBase {
             'callback'            => [$this, 'check_deposit'],
             'permission_callback' => [$this, 'check_user_permission'],
             'args'                => [
-                'since' => ['required' => false, 'type' => 'string'],
+                'since'           => ['required' => false, 'type' => 'string'],
+                'since_id'        => ['required' => false, 'type' => 'integer'],
+                'expected_amount' => ['required' => false, 'type' => 'number'],
             ],
         ]);
     }
@@ -59,17 +61,29 @@ class WalletController extends RestControllerBase {
         $wallet = $wallet_model->ensure_wallet_exists($user_id);
 
         $table_txns = $wpdb->prefix . 'faiiya_transactions';
-        $since = sanitize_text_field((string) ($request->get_param('since') ?? ''));
+        $since_id = (int) ($request->get_param('since_id') ?? 0);
+        $since_time = sanitize_text_field((string) ($request->get_param('since') ?? ''));
 
-        $sql = "SELECT * FROM {$table_txns} WHERE user_id = %d AND type = 'deposit' AND status = 'completed'";
-        $params = [$user_id];
-        if (!empty($since)) {
-            $sql .= " AND created_at >= %s";
-            $params[] = $since;
+        // 1. Check local database strictly for a completed deposit that was created AFTER the modal was opened
+        $latest = null;
+        if ($since_id > 0) {
+            $latest = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$table_txns} 
+                 WHERE user_id = %d AND type = 'deposit' AND status = 'completed' AND id > %d 
+                 ORDER BY id DESC LIMIT 1",
+                $user_id,
+                $since_id
+            ));
+        } elseif (!empty($since_time)) {
+            // Strictly check created_at greater than the modal open timestamp (NEVER fallback to past deposits)
+            $latest = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$table_txns} 
+                 WHERE user_id = %d AND type = 'deposit' AND status = 'completed' AND created_at > %s 
+                 ORDER BY id DESC LIMIT 1",
+                $user_id,
+                $since_time
+            ));
         }
-        $sql .= " ORDER BY id DESC LIMIT 1";
-
-        $latest = $wpdb->get_row($wpdb->prepare($sql, ...$params));
 
         if ($latest) {
             return $this->success([
@@ -78,12 +92,32 @@ class WalletController extends RestControllerBase {
                 'reference'     => $latest->reference,
                 'balance_after' => (float) $latest->balance_after,
                 'created_at'    => $latest->created_at,
+                'txn_id'        => (int) $latest->id,
             ]);
+        }
+
+        // 2. Active Direct Sync with Monnify API:
+        // In case the webhook was delayed or blocked by host bot-protection/security,
+        // synchronize directly with Monnify API reserved accounts right now.
+        $monnify_service = new MonnifyService();
+        if ($monnify_service->is_configured()) {
+            $sync_res = $monnify_service->sync_customer_reserved_transactions($user_id);
+            if (!empty($sync_res['credited']) && is_array($sync_res['credited'])) {
+                $latest_credited = end($sync_res['credited']);
+                return $this->success([
+                    'funded'        => true,
+                    'amount'        => (float) $latest_credited['amount'],
+                    'reference'     => $latest_credited['reference'],
+                    'balance_after' => (float) $latest_credited['balance_after'],
+                    'created_at'    => current_time('mysql'),
+                    'txn_id'        => (int) ($latest_credited['txn_id'] ?? 0),
+                ]);
+            }
         }
 
         return $this->success([
             'funded'  => false,
-            'balance' => (float) $wallet->balance,
+            'balance' => $wallet_model->get_balance($user_id),
         ]);
     }
 
@@ -91,20 +125,20 @@ class WalletController extends RestControllerBase {
         $user_id = get_current_user_id();
 
         $wallet_model = new WalletModel();
-        $wallet = $wallet_model->ensure_wallet_exists($user_id);
+        $wallet = $wallet_model->get_wallet($user_id) ?: $wallet_model->ensure_wallet_exists($user_id);
 
         $va_model = new VirtualAccountModel();
         $virtual_accounts = $va_model->get_user_accounts($user_id);
 
         return $this->success([
-            'wallet_id'        => (int) $wallet->id,
+            'wallet_id'        => (int) ($wallet->id ?? 0),
             'user_id'          => $user_id,
-            'balance'          => (float) $wallet->balance,
-            'currency'         => $wallet->currency,
-            'status'           => $wallet->status,
+            'balance'          => $wallet_model->get_balance($user_id),
+            'currency'         => $wallet->currency ?? 'NGN',
+            'status'           => $wallet->status ?? 'active',
             'kyc_status'       => $wallet->kyc_status ?? 'unverified',
             'virtual_accounts' => $virtual_accounts,
-            'last_updated'     => $wallet->updated_at,
+            'last_updated'     => $wallet->updated_at ?? current_time('mysql'),
         ]);
     }
 
@@ -153,28 +187,57 @@ class WalletController extends RestControllerBase {
                 'nin'            => !empty($nin) ? $clean_id : '',
             ]);
 
-            // 2. Name Compliance Replacement: Replace WordPress first_name, other_names, and last_name with verified identity
-            $verified_account_name = $monnify_resp['accountName'] ?? $monnify_resp['customerName'] ?? '';
-            $synced_name = '';
+            // 2. Name Compliance Replacement: Keep complete registered name or verified customer full name. NEVER truncate to 3 letters!
+            $raw_account_name = (string) ($monnify_resp['accountName'] ?? '');
+            $raw_customer_name = (string) ($monnify_resp['customerName'] ?? '');
 
-            if (!empty($verified_account_name)) {
-                $clean_name = trim((string) preg_replace('/^FAIIYA\s*\/\s*/i', '', $verified_account_name));
-                $name_parts = preg_split('/\s+/', $clean_name);
-                $verified_first = sanitize_text_field($name_parts[0] ?? $user->first_name);
-                $verified_last  = sanitize_text_field(count($name_parts) > 1 ? end($name_parts) : $user->last_name);
-                $verified_other = count($name_parts) > 2 ? sanitize_text_field(implode(' ', array_slice($name_parts, 1, -1))) : '';
+            // Clean any corporate prefixes like "FAIIYA / " or "FAIIYA - "
+            $cleaned_account_name = trim((string) preg_replace('/^FAIIYAs*[/-]s*/i', '', $raw_account_name));
 
-                wp_update_user([
-                    'ID'           => $user_id,
-                    'first_name'   => $verified_first,
-                    'last_name'    => $verified_last,
-                    'display_name' => trim("{$verified_first} {$verified_other} {$verified_last}"),
-                ]);
-                if (!empty($verified_other)) {
-                    update_user_meta($user_id, 'other_names', $verified_other);
+            $existing_first = (string) $user->first_name;
+            $existing_last  = (string) $user->last_name;
+            $official_first = $existing_first;
+            $official_last  = $existing_last;
+            $official_other = (string) get_user_meta($user_id, 'other_names', true);
+
+            // If customerName from Monnify contains full words, use it
+            if (!empty($raw_customer_name)) {
+                $c_parts = preg_split('/\s+/', trim($raw_customer_name));
+                if (count($c_parts) >= 2) {
+                    $official_first = sanitize_text_field($c_parts[0]);
+                    $official_last  = sanitize_text_field(end($c_parts));
+                    if (count($c_parts) > 2) {
+                        $official_other = sanitize_text_field(implode(' ', array_slice($c_parts, 1, -1)));
+                    }
+                } elseif (count($c_parts) === 1 && strlen($c_parts[0]) > 3) {
+                    $official_first = sanitize_text_field($c_parts[0]);
                 }
-                $synced_name = trim("{$verified_first} {$verified_other} {$verified_last}");
+            } elseif (!empty($cleaned_account_name)) {
+                // Only parse cleaned_account_name if it is NOT a 3-letter abbreviation
+                $a_parts = preg_split('/\s+/', $cleaned_account_name);
+                if (count($a_parts) >= 2) {
+                    $official_first = sanitize_text_field($a_parts[0]);
+                    $official_last  = sanitize_text_field(end($a_parts));
+                } elseif (count($a_parts) === 1 && strlen($a_parts[0]) > 3 && empty($existing_first)) {
+                    $official_first = sanitize_text_field($a_parts[0]);
+                }
             }
+
+            if (empty($official_first)) {
+                $official_first = $user->display_name ?: 'Customer';
+            }
+
+            wp_update_user([
+                'ID'           => $user_id,
+                'first_name'   => $official_first,
+                'last_name'    => $official_last,
+                'display_name' => trim("{$official_first} {$official_other} {$official_last}"),
+            ]);
+            if (!empty($official_other)) {
+                update_user_meta($user_id, 'other_names', $official_other);
+            }
+            update_user_meta($user_id, 'faiiya_kyc_status', 'verified');
+            $synced_name = trim("{$official_first} {$official_other} {$official_last}");
 
             // 3. Save virtual accounts
             $va_model = new VirtualAccountModel();

@@ -53,28 +53,12 @@ class WC_Gateway_Faiiya_Pay extends \WC_Payment_Gateway {
     }
 
     public function is_available(): bool {
-        if ('yes' !== $this->enabled) {
+        if (isset($this->enabled) && ($this->enabled === 'no' || $this->enabled === false || $this->enabled === '0' || $this->enabled === 0)) {
             return false;
         }
 
-        if (is_admin()) {
-            return parent::is_available();
-        }
-
-        if (!is_user_logged_in()) {
-            // Keep visible at checkout so guest knows wallet is accepted, prompting login
-            return apply_filters('faiiya_pay_gateway_available_for_guests', true);
-        }
-
-        $user_id = get_current_user_id();
-        $wallet_model = new \FaiiyaPay\Models\WalletModel();
-        $wallet = $wallet_model->ensure_wallet_exists($user_id);
-
-        if ($wallet->status !== 'active') {
-            return false;
-        }
-
-        return parent::is_available();
+        // Never hide gateway at checkout: allows customers to see their balance, log in, or top up
+        return true;
     }
 
     public function payment_fields(): void {
@@ -87,8 +71,7 @@ class WC_Gateway_Faiiya_Pay extends \WC_Payment_Gateway {
 
         $user_id = get_current_user_id();
         $wallet_model = new \FaiiyaPay\Models\WalletModel();
-        $wallet = $wallet_model->ensure_wallet_exists($user_id);
-        $balance = (float) $wallet->balance;
+        $balance = $wallet_model->get_balance($user_id);
         $order_total = (function_exists('WC') && WC() && WC()->cart) ? (float) WC()->cart->get_total('edit') : 0.00;
 
         echo '<div class="faiiya-pay-checkout-box" style="padding: 16px; border-radius: 8px; background: #f8fafc; border: 1px solid #e2e8f0; margin-top: 10px;">';

@@ -81,11 +81,18 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
 
   const wallet = faiiyaEngine.getWallet(currentUser.id);
   const isFrozen = wallet.status === 'frozen';
-  const virtualAccounts = faiiyaEngine.getVirtualAccounts(currentUser.id);
-  const isKycVerified = (wallet.kycStatus === 'verified' || virtualAccounts.length > 0) && currentUser.kycStatus !== 'unverified';
+  let virtualAccounts = faiiyaEngine.getVirtualAccounts(currentUser.id);
+  const isKycVerified =
+    wallet.kycStatus === 'verified' ||
+    currentUser.kycStatus === 'verified' ||
+    virtualAccounts.length > 0;
 
-  // KYC Verification state: NIN is primary / shown first!
-  const [kycType, setKycType] = useState<'nin' | 'bvn'>('nin');
+  // Auto-sync virtual accounts if account is verified but accounts haven't been provisioned yet
+  if (isKycVerified && virtualAccounts.length === 0) {
+    virtualAccounts = faiiyaEngine.provisionDedicatedVirtualAccounts(currentUser);
+  }
+
+  // KYC Verification state: National Identification Number (NIN)
   const [kycInput, setKycInput] = useState<string>('');
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
   const [kycError, setKycError] = useState<string | null>(null);
@@ -129,17 +136,13 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // --- KYC VERIFICATION ---
+  // --- KYC VERIFICATION (NIN ONLY) ---
   const handleVerifyKyc = async (e: React.FormEvent) => {
     e.preventDefault();
     setKycError(null);
     const cleanId = kycInput.replace(/\D/g, '');
     if (cleanId.length !== 11) {
-      setKycError(
-        `Please enter a valid 11-digit ${
-          kycType === 'nin' ? 'National ID Number (NIN)' : 'Bank Verification Number (BVN)'
-        }.`
-      );
+      setKycError('Please enter a valid 11-digit National Identification Number (NIN).');
       return;
     }
 
@@ -147,7 +150,7 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
     try {
       const verified = await faiiyaEngine.verifyKycWithMonnify({
         bvnOrNin: cleanId,
-        type: kycType,
+        type: 'nin',
         nameHint: {
           firstName: currentUser.firstName,
           otherNames: currentUser.otherNames,
@@ -166,7 +169,7 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
       });
 
       setShowVerifiedCard(true);
-      showToast('✓ Identity verified via live NIMC/NIBSS gateway! Virtual accounts activated.');
+      showToast('✓ Identity verified via live NIMC gateway! Dedicated Virtual Accounts activated.');
     } catch (err: any) {
       setKycError(err.message || 'Identity verification failed.');
     } finally {
@@ -328,35 +331,28 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
       )}
 
       {/* Main Wallet Header Card */}
-      <div className="bg-gradient-to-br from-slate-900 via-slate-850 to-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none" />
-
+      <div className="bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 border border-emerald-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden text-white">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <span className="px-3 py-1 text-xs font-bold uppercase tracking-wider rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Production Wallet</span>
+          <div className="space-y-3 flex-1">
+            {/* Full Profile Name at the top of Account Details */}
+            <div className="flex items-center justify-between border-b border-white/20 pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-base">👤</span>
+                <span className="text-base font-extrabold text-white tracking-tight">
+                  {currentUser.firstName} {currentUser.lastName}
+                </span>
+              </div>
+              <span className="text-2xs font-bold uppercase tracking-wider text-emerald-100/90">
+                FAIIYA WALLET
               </span>
-              {isKycVerified ? (
-                <span className="px-3 py-1 text-xs font-bold uppercase tracking-wider rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/30 flex items-center gap-1.5">
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>NIMC/NIBSS Verified</span>
-                </span>
-              ) : (
-                <span className="px-3 py-1 text-xs font-bold uppercase tracking-wider rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  <span>Unverified KYC</span>
-                </span>
-              )}
             </div>
 
             <div>
-              <div className="text-xs uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-2">
+              <div className="text-xs uppercase tracking-wider text-emerald-100/80 font-semibold flex items-center gap-2">
                 <span>Available Balance</span>
                 <button
                   onClick={() => setHideBalance(!hideBalance)}
-                  className="text-slate-500 hover:text-slate-300 transition-colors"
+                  className="text-emerald-200 hover:text-white transition-colors"
                 >
                   {hideBalance ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
                 </button>
@@ -364,16 +360,19 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
 
               <div className="text-3xl sm:text-5xl font-black text-white font-mono tracking-tight mt-1">
                 {hideBalance ? '••••••••' : `₦${wallet.balance.toLocaleString()}`}
-                <span className="text-sm sm:text-base font-normal text-slate-400 font-sans ml-2">
+                <span className="text-sm sm:text-base font-normal text-emerald-100 font-sans ml-2">
                   NGN
                 </span>
               </div>
-            </div>
 
-            <p className="text-xs text-slate-400 max-w-xl">
-              Hello, <span className="text-white font-semibold">{currentUser.firstName} {currentUser.lastName}</span>.
-              Fund your wallet instantly via dedicated virtual accounts, spend seamlessly on WooCommerce checkout, or withdraw directly to any Nigerian commercial bank.
-            </p>
+              {/* Clean verified status directly under Amount details */}
+              <div className="mt-3">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-white/20 backdrop-blur-sm text-white">
+                  <span className="w-2 h-2 rounded-full bg-emerald-300" />
+                  <span>{isKycVerified ? 'Verified (Tier 1)' : 'Pending Verification'}</span>
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* Action Buttons */}
@@ -436,77 +435,60 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
 
       {/* KYC Verification Banner (if unverified) */}
       {!isKycVerified && (
-        <div className="bg-slate-900 border border-amber-500/30 rounded-3xl p-6 sm:p-7 shadow-xl">
+        <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl p-6 sm:p-7 shadow-xl">
           <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
               <Fingerprint className="w-6 h-6" />
             </div>
             <div className="flex-1 space-y-3">
               <div>
-                <h3 className="text-base font-bold text-white">
-                  Compliance KYC Verification Required
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <span>National Identification Number (NIN) Verification</span>
+                  <span className="text-2xs uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold">
+                    CBN Mandate
+                  </span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  In compliance with CBN and Monnify KYC guidelines, verify your 11-digit NIN or BVN to activate personal Dedicated Virtual Accounts and lift transaction limits.
+                  In compliance with Central Bank of Nigeria (CBN) regulations, submit your 11-digit National Identity Number (NIN) to activate personal Dedicated Virtual Accounts and unlock unlimited instant bank deposits.
                 </p>
               </div>
 
               <form onSubmit={handleVerifyKyc} className="flex flex-col sm:flex-row gap-3">
-                <div className="flex gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setKycType('nin')}
-                    className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                      kycType === 'nin'
-                        ? 'bg-emerald-500 text-slate-950 font-extrabold'
-                        : 'bg-slate-800 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    NIN (Primary)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setKycType('bvn')}
-                    className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                      kycType === 'bvn'
-                        ? 'bg-emerald-500 text-slate-950 font-extrabold'
-                        : 'bg-slate-800 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    BVN
-                  </button>
-                </div>
-
                 <input
-                  type="password"
+                  type="text"
                   maxLength={11}
-                  placeholder={`Enter 11-digit ${kycType.toUpperCase()}...`}
+                  placeholder="Enter 11-digit NIN (e.g. 11223344556)..."
                   value={kycInput}
-                  onChange={(e) => setKycInput(e.target.value)}
-                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-4 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  onChange={(e) => setKycInput(e.target.value.replace(/\D/g, ''))}
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                 />
 
                 <button
                   type="submit"
                   disabled={isVerifying || kycInput.replace(/\D/g, '').length !== 11}
-                  className="px-6 py-2 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shrink-0"
+                  className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shrink-0 transition-transform active:scale-95"
                 >
                   {isVerifying ? (
                     <>
                       <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                      <span>Verifying Monnify...</span>
+                      <span>Verifying with Monnify...</span>
                     </>
                   ) : (
                     <>
                       <ShieldCheck className="w-4 h-4" />
-                      <span>Verify & Provision DVA</span>
+                      <span>Verify NIN & Unlock Accounts →</span>
                     </>
                   )}
                 </button>
               </form>
 
+              <div className="flex items-center gap-2 text-2xs text-slate-400">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>Zero-Storage Guarantee: Your NIN is verified directly with NIMC via Monnify API and never stored on this server.</span>
+              </div>
+
               {kycError && (
-                <div className="text-xs text-red-400 flex items-center gap-1.5">
+                <div className="text-xs text-red-400 flex items-center gap-1.5 bg-red-500/10 border border-red-500/20 px-3 py-2 rounded-xl">
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{kycError}</span>
                 </div>
@@ -890,35 +872,31 @@ export const CustomerWalletView: React.FC<CustomerWalletViewProps> = ({
                     </div>
                   </div>
 
-                  {/* LIVE WAITING FOR PAYMENT RADAR ANIMATION */}
-                  <div className="text-center py-3 px-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl relative overflow-hidden">
-                    <div className="relative w-20 h-20 mx-auto flex items-center justify-center my-2">
-                      <div className="absolute inset-0 rounded-full bg-emerald-500/20 animate-ping opacity-75" />
-                      <div className="absolute inset-2 rounded-full bg-emerald-500/30 animate-pulse" />
-                      <div className="w-12 h-12 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-400 shadow-lg shadow-emerald-500/30">
-                        <RefreshCw className="w-6 h-6 animate-spin" />
-                      </div>
+                  {/* CLEAN WAITING FOR PAYMENT STATE */}
+                  <div className="text-center py-4 px-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl relative overflow-hidden">
+                    <div className="w-12 h-12 rounded-full bg-emerald-500/10 border-2 border-emerald-500/30 mx-auto flex items-center justify-center text-emerald-400 mb-2.5">
+                      <RefreshCw className="w-5 h-5 animate-spin" />
                     </div>
 
-                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold mb-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                      <span>Waiting for Monnify Payment Notification...</span>
+                    <div className="text-sm font-bold text-white mb-1">
+                      Waiting for payment...
                     </div>
 
                     <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-                      Transfer <strong className="text-white font-mono">₦{amt.toLocaleString()}</strong> to the account above via any Nigerian bank app or USSD. Monnify automatically verifies the inbound transaction and credits your wallet immediately.
+                      Transfer <strong className="text-white font-mono">₦{amt.toLocaleString()}</strong> to the account above. Your wallet balance will automatically update once received.
                     </p>
                   </div>
 
-                  {/* Immediate Simulation / Trigger Action */}
-                  <button
-                    type="button"
-                    onClick={() => handleSimulateDeposit(targetVa.bankName, targetVa.accountNumber)}
-                    className="w-full py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm shadow-xl shadow-emerald-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    <span>Simulate Inbound Payment Received (Instant Trigger)</span>
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleSimulateDeposit(targetVa.bankName, targetVa.accountNumber)}
+                      className="flex-1 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Check Status Now</span>
+                    </button>
+                  </div>
                 </div>
               );
             })()}

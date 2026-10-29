@@ -10,6 +10,8 @@ import {
   Ticket,
   ArrowRight,
   LogIn,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { faiiyaEngine } from '../services/faiiyaEngine';
 
@@ -31,6 +33,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
   const [phoneNumber, setPhoneNumber] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [referralCode, setReferralCode] = useState('');
   const [loginEmailOrPhone, setLoginEmailOrPhone] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -261,15 +264,30 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
               <label className="text-xs font-semibold text-slate-300 block mb-1">
                 Password (min 8 characters) <span className="text-rose-400">*</span>
               </label>
-              <input
-                type="password"
-                required
-                minLength={8}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
-              />
+              <div className="relative flex items-center">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  minLength={8}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-3.5 pr-11 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 text-slate-400 hover:text-white p-1 rounded-lg transition-colors focus:outline-none"
+                  title={showPassword ? 'Hide password' : 'Show password'}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? (
+                    <EyeOff className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <Eye className="w-4 h-4 text-slate-400" />
+                  )}
+                </button>
+              </div>
             </div>
 
             {/* Referral Code (Optional) on its own separate line */}

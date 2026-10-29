@@ -28,6 +28,7 @@ export const WooCommerceCheckout: React.FC<WooCommerceCheckoutProps> = ({
     { productId: 101, quantity: 1 },
     { productId: 104, quantity: 1 },
   ]);
+  const [selectedGateway, setSelectedGateway] = useState<'wallet' | 'monnify'>('wallet');
   const [placedOrder, setPlacedOrder] = useState<StoreOrder | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -82,15 +83,26 @@ export const WooCommerceCheckout: React.FC<WooCommerceCheckoutProps> = ({
 
     setTimeout(() => {
       try {
-        const order = faiiyaEngine.processCheckout(
-          currentUser.id,
-          cartItems.map((item) => ({
-            productId: item.id,
-            productName: item.name,
-            price: item.price,
-            quantity: item.quantity,
-          }))
-        );
+        const order =
+          selectedGateway === 'wallet'
+            ? faiiyaEngine.processCheckout(
+                currentUser.id,
+                cartItems.map((item) => ({
+                  productId: item.id,
+                  productName: item.name,
+                  price: item.price,
+                  quantity: item.quantity,
+                }))
+              )
+            : faiiyaEngine.processMonnifyCheckout(
+                currentUser.id,
+                cartItems.map((item) => ({
+                  productId: item.id,
+                  productName: item.name,
+                  price: item.price,
+                  quantity: item.quantity,
+                }))
+              );
 
         setPlacedOrder(order);
         setCart([]);
@@ -309,63 +321,139 @@ export const WooCommerceCheckout: React.FC<WooCommerceCheckoutProps> = ({
               )}
             </div>
 
-            {/* WooCommerce Payment Gateway Box: Faiiya Pay Wallet */}
+            {/* WooCommerce Payment Gateways Section */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-full border-4 border-emerald-500 bg-slate-900" />
-                  <span className="font-bold text-sm text-white">
-                    Faiiya Pay Digital Wallet
-                  </span>
-                </div>
-                <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                  Instant Closed-Loop
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 className="font-bold text-sm text-white">Payment Method</h3>
+                <span className="text-[10px] font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
+                  2 Gateways Available
                 </span>
               </div>
 
-              {/* Gateway payment_fields() representation */}
-              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">Your Wallet Balance:</span>
-                  <span className="font-mono font-bold text-emerald-400 text-sm">
-                    ₦{wallet.balance.toLocaleString('en-NG', { minimumFractionDigits: 2 })}
+              {/* Gateway 1: Faiiya Pay Wallet */}
+              <div
+                onClick={() => setSelectedGateway('wallet')}
+                className={`p-4 rounded-xl border transition-all cursor-pointer ${
+                  selectedGateway === 'wallet'
+                    ? 'bg-slate-950 border-emerald-500/80 ring-1 ring-emerald-500/30'
+                    : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className={`w-4 h-4 rounded-full border flex items-center justify-center transition-all ${
+                        selectedGateway === 'wallet'
+                          ? 'border-emerald-500 bg-emerald-500'
+                          : 'border-slate-600 bg-slate-900'
+                      }`}
+                    >
+                      {selectedGateway === 'wallet' && <div className="w-1.5 h-1.5 rounded-full bg-slate-950" />}
+                    </div>
+                    <span className="font-bold text-sm text-white flex items-center gap-1.5">
+                      <Wallet className="w-4 h-4 text-emerald-400" />
+                      Faiiya Pay Digital Wallet
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                    Closed-Loop
                   </span>
                 </div>
 
-                {!hasSufficientBalance && cartItems.length > 0 ? (
-                  /* Insufficient Balance Notice with Virtual Bank Accounts */
-                  <div className="bg-red-950/40 border border-red-800/60 p-3.5 rounded-lg space-y-2 text-xs">
-                    <div className="flex items-center gap-2 text-rose-400 font-bold">
-                      <AlertTriangle className="w-4 h-4 shrink-0" />
-                      <span>Insufficient wallet balance. You need ₦{shortfall.toLocaleString()} more.</span>
+                {selectedGateway === 'wallet' && (
+                  <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Available Wallet Balance:</span>
+                      <span className="font-mono font-bold text-emerald-400 text-sm">
+                        ₦{wallet.balance.toLocaleString('en-NG', { minimumFractionDigits: 2 })}
+                      </span>
                     </div>
 
-                    <p className="text-[11px] text-slate-300">
-                      Top up instantly by sending a bank transfer to your dedicated Monnify account:
-                    </p>
-
-                    <div className="space-y-1 font-mono text-[11px] bg-slate-950/80 p-2 rounded border border-slate-800">
-                      {virtualAccounts.map((va) => (
-                        <div key={va.id} className="flex justify-between text-slate-300">
-                          <span className="text-slate-400">{va.bankName}:</span>
-                          <span className="text-white font-bold">{va.accountNumber}</span>
+                    {!hasSufficientBalance && cartItems.length > 0 ? (
+                      <div className="bg-red-950/40 border border-red-800/60 p-3 rounded-lg space-y-2 text-xs">
+                        <div className="flex items-center gap-2 text-rose-400 font-bold">
+                          <AlertTriangle className="w-4 h-4 shrink-0" />
+                          <span>Insufficient balance. Need ₦{shortfall.toLocaleString()} more.</span>
                         </div>
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={onGoToWallet}
-                      className="w-full text-center text-xs font-bold text-emerald-400 hover:text-emerald-300 pt-1 underline underline-offset-2"
-                    >
-                      Open Wallet & Simulate Top-Up Transfer &rarr;
-                    </button>
+                        <p className="text-[11px] text-slate-300">
+                          Transfer to your dedicated account to fund your balance:
+                        </p>
+                        <div className="space-y-1 font-mono text-[11px] bg-slate-950/80 p-2 rounded border border-slate-800">
+                          {virtualAccounts.map((va) => (
+                            <div key={va.id} className="flex justify-between text-slate-300">
+                              <span className="text-slate-400">{va.bankName}:</span>
+                              <span className="text-white font-bold">{va.accountNumber}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <button
+                          onClick={onGoToWallet}
+                          className="w-full text-center text-xs font-bold text-emerald-400 hover:text-emerald-300 pt-1 underline underline-offset-2"
+                        >
+                          Open Wallet & Simulate Top-Up Transfer &rarr;
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="bg-emerald-950/30 border border-emerald-800/40 p-2.5 rounded-lg text-xs text-emerald-300 flex items-start gap-2">
+                        <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                        <span>
+                          ✓ ₦{total.toLocaleString()} will be debited atomically upon order confirmation.
+                        </span>
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <div className="bg-emerald-950/30 border border-emerald-800/40 p-3 rounded-lg text-xs text-emerald-300 flex items-start gap-2">
-                    <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
-                    <span>
-                      ✓ Sufficient balance available. ₦{total.toLocaleString()} will be debited atomically upon order confirmation.
+                )}
+              </div>
+
+              {/* Gateway 2: Monnify Direct Online Checkout */}
+              <div
+                onClick={() => setSelectedGateway('monnify')}
+                className={`p-4 rounded-xl border transition-all cursor-pointer ${
+                  selectedGateway === 'monnify'
+                    ? 'bg-slate-950 border-sky-500/80 ring-1 ring-sky-500/30'
+                    : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className={`w-4 h-4 rounded-full border flex items-center justify-center transition-all ${
+                        selectedGateway === 'monnify'
+                          ? 'border-sky-500 bg-sky-500'
+                          : 'border-slate-600 bg-slate-900'
+                      }`}
+                    >
+                      {selectedGateway === 'monnify' && <div className="w-1.5 h-1.5 rounded-full bg-slate-950" />}
+                    </div>
+                    <span className="font-bold text-sm text-white flex items-center gap-1.5">
+                      <CreditCard className="w-4 h-4 text-sky-400" />
+                      Debit Card / Bank Transfer / USSD
                     </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded border border-sky-500/20">
+                    Monnify Direct
+                  </span>
+                </div>
+
+                {selectedGateway === 'monnify' && (
+                  <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-2.5 text-xs text-slate-300">
+                    <p className="text-[12px] text-slate-300 leading-relaxed">
+                      Pay securely with your ATM Card (Mastercard, Visa, Verve), direct online bank transfer, or USSD via Monnify hosted checkout.
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="bg-slate-900 border border-slate-700 px-2 py-0.5 rounded text-[11px] font-bold text-sky-300">
+                        💳 ATM Cards
+                      </span>
+                      <span className="bg-slate-900 border border-slate-700 px-2 py-0.5 rounded text-[11px] font-bold text-emerald-300">
+                        🏦 Bank Transfer
+                      </span>
+                      <span className="bg-slate-900 border border-slate-700 px-2 py-0.5 rounded text-[11px] font-bold text-purple-300">
+                        📱 USSD
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      🔒 No wallet balance required. Works for any shopper (guests & logged-in customers).
+                    </div>
                   </div>
                 )}
               </div>
@@ -377,19 +465,30 @@ export const WooCommerceCheckout: React.FC<WooCommerceCheckoutProps> = ({
               )}
 
               <button
-                disabled={!hasSufficientBalance || cartItems.length === 0 || isProcessing}
+                disabled={
+                  cartItems.length === 0 ||
+                  isProcessing ||
+                  (selectedGateway === 'wallet' && !hasSufficientBalance)
+                }
                 onClick={handleProcessPayment}
                 className={`w-full py-3 px-4 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
-                  hasSufficientBalance && cartItems.length > 0
-                    ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/25 cursor-pointer hover:scale-[1.01]'
+                  cartItems.length > 0 &&
+                  (selectedGateway === 'monnify' || (selectedGateway === 'wallet' && hasSufficientBalance))
+                    ? selectedGateway === 'wallet'
+                      ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/25 cursor-pointer hover:scale-[1.01]'
+                      : 'bg-sky-500 hover:bg-sky-400 text-slate-950 shadow-lg shadow-sky-500/25 cursor-pointer hover:scale-[1.01]'
                     : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
                 }`}
               >
                 {isProcessing ? (
-                  <span>Locking Row & Executing Payment...</span>
+                  <span>Executing Payment...</span>
                 ) : (
                   <>
-                    <span>Place Order with Faiiya Wallet</span>
+                    <span>
+                      {selectedGateway === 'wallet'
+                        ? 'Place Order with Faiiya Wallet'
+                        : `Pay ₦${total.toLocaleString()} via Monnify`}
+                    </span>
                     <ArrowRight className="w-4 h-4" />
                   </>
                 )}

@@ -143,6 +143,7 @@ export interface PluginSettings {
   monnifyApiKey: string;
   monnifySecretKey: string;
   monnifyContractCode: string;
+  monnifyWalletAccountNumber?: string;
   adminSecurityPin: string;
   feeBearer: 'merchant' | 'customer';
   depositFeeType: 'flat' | 'percentage';
